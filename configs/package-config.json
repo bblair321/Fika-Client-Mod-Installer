@@ -1,0 +1,87 @@
+{
+  "appName": "MyApplication",
+  "version": "1.0.0",
+  "outputDir": "./dist",
+  "includeVersion": true,
+  "platform": "win32",
+  "arch": "x64",
+  "node": {
+    "entryPoint": "./index.js",
+    "outputName": "myapp",
+    "assets": [
+      "./config/**/*",
+      "./public/**/*",
+      "./templates/**/*"
+    ],
+    "targets": [
+      "node18-win-x64",
+      "node18-linux-x64",
+      "node18-macos-x64"
+    ]
+  },
+  "electron": {
+    "packageJson": "./package.json",
+    "outputName": "MyElectronApp",
+    "build": {
+      "appId": "com.mycompany.myapp",
+      "productName": "My Application",
+      "icon": "./assets/icon.png",
+      "directories": {
+        "output": "./dist-electron",
+        "buildResources": "./assets"
+      },
+      "files": [
+        "dist/**/*",
+        "electron/**/*",
+        "node_modules/**/*",
+        "package.json"
+      ],
+      "win": {
+        "target": "nsis",
+        "arch": ["x64"]
+      },
+      "nsis": {
+        "oneClick": false,
+        "allowToChangeInstallationDirectory": true,
+        "createDesktopShortcut": true,
+        "createStartMenuShortcut": true
+      }
+    }
+  },
+  "python": {
+    "entryPoint": "./main.py",
+    "outputName": "MyPythonApp",
+    "oneFile": true,
+    "addData": [
+      "./data;data",
+      "./config;config",
+      "./assets;assets"
+    ],
+    "hiddenImports": [
+      "tkinter",
+      "requests",
+      "pandas"
+    ]
+  },
+  "web": {
+    "buildDir": "./dist",
+    "outputName": "MyWebApp",
+    "tauri": {
+      "config": {
+        "package": {
+          "productName": "My Web App",
+          "version": "1.0.0"
+        },
+        "tauri": {
+          "allowlist": {
+            "all": false,
+            "shell": {
+              "all": false,
+              "open": true
+            }
+          }
+        }
+      }
+    }
+  }
+}

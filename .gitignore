@@ -1,0 +1,67 @@
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+yarn.lock
+
+# Build outputs
+dist/
+build/
+temp/
+tmp/
+
+# Generated executables and archives
+*.exe
+*.zip
+*.tar.gz
+*.rar
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Windows
+*.lnk
+*.bat
+
+# Test files and debug outputs
+test-*/
+debug-*/
+manual-test/
+debug-extraction/
+
+# Archive files (since they're generated)
+*_archive.zip
+extracted_files.zip
+
+# Configuration files with sensitive data
+config.local.json
+.env
+.env.local
+
+# Backup files
+*.backup
+*.bak
+
+# Documentation that's auto-generated
+*-GENERATED.md

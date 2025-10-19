@@ -1,0 +1,39 @@
+{
+  "name": "exe-packager",
+  "version": "1.0.0",
+  "description": "Universal toolkit for creating executables and self-extracting archives",
+  "main": "scripts/package-exe.js",
+  "scripts": {
+    "test": "echo \"No tests specified\" && exit 0",
+    "install-tools": "npm install -g pkg electron-builder",
+    "example:node": "node scripts/package-exe.js node --help",
+    "example:files": "node scripts/pack-files.js --help"
+  },
+  "keywords": [
+    "executable",
+    "packaging",
+    "pkg",
+    "electron",
+    "pyinstaller",
+    "self-extracting",
+    "installer"
+  ],
+  "author": "bblair321",
+  "license": "MIT",
+  "dependencies": {
+    "adm-zip": "^0.5.16",
+    "archiver": "^6.0.1",
+    "yauzl": "^2.10.0"
+  },
+  "devDependencies": {
+    "electron-builder": "^25.1.8",
+    "pkg": "^5.8.1"
+  },
+  "bin": {
+    "exe-pack": "scripts/package-exe.js",
+    "file-pack": "scripts/pack-files.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "appName": "MyFilePackage",
+  "version": "1.0.0",
+  "outputDir": "./dist",
+  "includeVersion": true,
+  "files": [
+    "./config.json",
+    "./readme.txt",
+    "./license.txt"
+  ],
+  "folders": [
+    "./assets",
+    "./data",
+    "./templates"
+  ],
+  "branding": {
+    "enabled": false,
+    "iconPath": "./assets/icon.ico",
+    "manifestPath": "./assets/manifest.xml",
+    "versionInfo": {
+      "enabled": false,
+      "companyName": "Your Company",
+      "productName": "Your Product",
+      "copyright": "© 2024 Your Company",
+      "description": "Your application description"
+    },
+    "digitalSign": {
+      "enabled": false,
+      "certificatePath": "./certificate.pfx",
+      "password": "your-password"
+    }
+  }
+}
