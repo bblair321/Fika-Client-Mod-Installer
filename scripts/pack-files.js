@@ -10,7 +10,38 @@ const path = require("path");
 const { execSync } = require("child_process");
 const os = require("os");
 const archiver = require("archiver");
-const AdmZip = require("adm-zip");
+// Make dependencies optional for pkg bundling compatibility
+let AdmZip, cliProgress;
+
+try {
+  AdmZip = require("adm-zip");
+} catch (e) {
+  AdmZip = null;
+}
+
+try {
+  cliProgress = require("cli-progress");
+} catch (e) {
+  cliProgress = null;
+}
+
+// Make ora optional for compatibility
+let ora;
+try {
+  const oraModule = require("ora");
+  ora = oraModule.default || oraModule;
+} catch (error) {
+  // ora not available, use simple console logging instead
+  ora = {
+    start: (text) => {
+      console.log(text);
+      return {
+        succeed: (msg) => console.log(msg),
+        fail: (msg) => console.log(msg),
+      };
+    },
+  };
+}
 
 class FilePacker {
   constructor(config = {}) {
@@ -81,13 +112,68 @@ class FilePacker {
       const output = fs.createWriteStream(outputPath);
       const archive = archiver("zip", { zlib: { level: 9 } });
 
+      // Count total files for progress tracking
+      let totalFiles = 0;
+      files.forEach((file) => {
+        if (fs.existsSync(file)) totalFiles++;
+      });
+      folders.forEach((folder) => {
+        if (fs.existsSync(folder)) {
+          totalFiles += this.countFilesInDirectory(folder);
+        }
+      });
+
+      // Create progress bar (with fallback if cliProgress not available)
+      let progressBar = null;
+      if (cliProgress) {
+        progressBar = new cliProgress.SingleBar({
+          format:
+            "📦 Archiving |{bar}| {percentage}% | {value}/{total} files | ETA: {eta}s",
+          barCompleteChar: "█",
+          barIncompleteChar: "░",
+          hideCursor: true,
+          clearOnComplete: false,
+        });
+      }
+
+      let processedFiles = 0;
+
+      // Start progress bar
+      if (totalFiles > 0 && progressBar) {
+        progressBar.start(totalFiles, 0);
+      }
+
       output.on("close", () => {
-        console.log(`📁 Archive created: ${archive.pointer()} bytes`);
+        if (totalFiles > 0 && progressBar) {
+          progressBar.stop();
+        }
+        const bytes = archive.pointer();
+        const sizeStr =
+          bytes === 0
+            ? "0 Bytes"
+            : bytes < 1024
+            ? bytes + " Bytes"
+            : bytes < 1024 * 1024
+            ? (bytes / 1024).toFixed(2) + " KB"
+            : bytes < 1024 * 1024 * 1024
+            ? (bytes / (1024 * 1024)).toFixed(2) + " MB"
+            : (bytes / (1024 * 1024 * 1024)).toFixed(2) + " GB";
+        console.log(`\n📁 Archive created: ${sizeStr}`);
         resolve();
       });
 
       archive.on("error", (err) => {
+        if (totalFiles > 0 && progressBar) {
+          progressBar.stop();
+        }
         reject(err);
+      });
+
+      archive.on("entry", (entry) => {
+        processedFiles++;
+        if (totalFiles > 0 && progressBar) {
+          progressBar.update(processedFiles);
+        }
       });
 
       archive.pipe(output);
@@ -97,7 +183,6 @@ class FilePacker {
         if (fs.existsSync(file)) {
           const fileName = path.basename(file);
           archive.file(file, { name: fileName });
-          console.log(`📄 Added file: ${fileName}`);
         }
       });
 
@@ -106,12 +191,30 @@ class FilePacker {
         if (fs.existsSync(folder)) {
           const folderName = path.basename(folder);
           archive.directory(folder, folderName);
-          console.log(`📁 Added folder: ${folderName}`);
         }
       });
 
       archive.finalize();
     });
+  }
+
+  countFilesInDirectory(dirPath) {
+    let count = 0;
+    try {
+      const items = fs.readdirSync(dirPath);
+      for (const item of items) {
+        const fullPath = path.join(dirPath, item);
+        const stat = fs.statSync(fullPath);
+        if (stat.isDirectory()) {
+          count += this.countFilesInDirectory(fullPath);
+        } else {
+          count++;
+        }
+      }
+    } catch (error) {
+      // Ignore errors when counting files
+    }
+    return count;
   }
 
   /**
@@ -123,6 +226,24 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { execSync } = require('child_process');
+// Make dependencies optional for pkg bundling
+let cliProgress, ora;
+
+try {
+  cliProgress = require('cli-progress');
+} catch (error) {
+  cliProgress = null;
+}
+
+try {
+  const oraModule = require('ora');
+  ora = oraModule.default || oraModule;
+} catch (error) {
+  // ora not available, use simple console logging instead
+  ora = {
+    start: (text) => ({ text, succeed: (msg) => console.log(msg), fail: (msg) => console.log(msg) })
+  };
+}
 
 // Look for the archive file alongside the executable
 const archiveFileName = '${archiveFileName}';
@@ -413,6 +534,8 @@ function extractFiles() {
   try {
     showMessage('${this.config.appName} - File Extractor');
     
+    console.log('\\n⏱️  Preparing extraction... Please wait...');
+    
     const extractDir = selectDirectory();
     
     if (!extractDir) {
@@ -526,6 +649,18 @@ function extractFiles() {
       } catch (zipError) {
         console.log('\\n⚠️  AdmZip not available, using PowerShell fallback...');
         
+        // Create progress spinner for extraction (with fallback)
+        let spinner;
+        try {
+          spinner = ora('🔄 Extracting files...').start();
+        } catch (oraError) {
+          console.log('🔄 Extracting files...');
+          spinner = {
+            succeed: (msg) => console.log(msg),
+            fail: (msg) => console.log(msg)
+          };
+        }
+
         // Fallback to PowerShell extraction with better error handling
         const psExtractScript = \`
 Write-Host "Starting PowerShell extraction..." -ForegroundColor Cyan
@@ -576,7 +711,6 @@ try {
         
         try {
           // Try a simpler PowerShell command first
-          console.log('\\n🔧 Attempting simple PowerShell extraction...');
           execSync(\`powershell -Command "Expand-Archive -Path '\${tempArchivePath}' -DestinationPath '\${extractDir}' -Force"\`, { 
             stdio: 'inherit', 
             shell: true,
@@ -587,14 +721,36 @@ try {
           const extractedFiles = fs.readdirSync(extractDir);
           extractedCount = extractedFiles.length;
           
-          console.log(\`\\n✅ Simple PowerShell extraction completed! Found \${extractedCount} items.\`);
+          spinner.succeed(\`✅ Extracted \${extractedCount} items successfully!\`);
+          
+          // List what was actually extracted
+          console.log(\`\\n📋 Files extracted to: \${extractDir}\`);
+          const extractedItems = fs.readdirSync(extractDir);
+          extractedItems.forEach(item => {
+            const itemPath = path.join(extractDir, item);
+            const itemStats = fs.statSync(itemPath);
+            if (itemStats.isDirectory()) {
+              console.log(\`   📂 \${item}/\`);
+            } else {
+              console.log(\`   📄 \${item} (\${formatBytes(itemStats.size)})\`);
+            }
+          });
           
         } catch (psError) {
-          console.log(\`\\n❌ Simple PowerShell extraction failed: \${psError.message}\`);
+          spinner.fail('❌ Simple PowerShell extraction failed');
           
           // Try the detailed script as fallback
           try {
-            console.log('\\n🔧 Trying detailed PowerShell extraction...');
+            let fallbackSpinner;
+            try {
+              fallbackSpinner = ora('🔧 Trying detailed PowerShell extraction...').start();
+            } catch (oraError) {
+              console.log('🔧 Trying detailed PowerShell extraction...');
+              fallbackSpinner = {
+                succeed: (msg) => console.log(msg),
+                fail: (msg) => console.log(msg)
+              };
+            }
             execSync(\`powershell -Command "\${psExtractScript}"\`, { 
               stdio: 'inherit', 
               shell: true,
@@ -605,8 +761,10 @@ try {
             const extractedFiles = fs.readdirSync(extractDir);
             extractedCount = extractedFiles.length;
             
+            fallbackSpinner.succeed(\`✅ Extracted \${extractedCount} items successfully!\`);
+            
           } catch (detailedPsError) {
-            console.log(\`\\n❌ Detailed PowerShell extraction also failed: \${detailedPsError.message}\`);
+            fallbackSpinner.fail('❌ Detailed PowerShell extraction also failed');
             throw detailedPsError;
           }
         }
@@ -628,7 +786,6 @@ try {
         // Check if this looks like a newly extracted file/folder
         const isLikelyNew = file.includes('test-mod-content') || 
                            file.includes('BepInEx') || 
-                           file.includes('debug-archive') ||
                            file.includes('config.json') || 
                            file.includes('TestMod.dll') ||
                            file.includes('README.md') ||
@@ -651,8 +808,10 @@ try {
       console.log(\`\\n📊 Total directory size: \${formatBytes(totalSize)}\`);
       if (newFilesCount > 0) {
         console.log(\`\\n✅ Successfully extracted \${newFilesCount} new files/folders!\`);
+        console.log(\`\\n🎯 Extraction completed successfully!\`);
       } else {
-        console.log(\`\\n⚠️  No new files detected. Check if extraction worked correctly.\`);
+        console.log(\`\\n⚠️  No new files detected, but extraction may have worked.\`);
+        console.log(\`\\n🔍 Check the extraction directory manually to verify files were extracted.\`);
       }
       
       // Clean up temp file
@@ -673,23 +832,105 @@ try {
     
     showMessage('✅ Extraction completed!\\n\\nFiles have been extracted to:\\n' + extractDir);
     
-    // Keep window open for a few seconds
-    console.log('\\n⏱️  This window will close in 10 seconds...');
+    // Keep window open longer and wait for user input
+    console.log('\\n==========================================');
+    console.log('        INSTALLATION COMPLETED!');
+    console.log('==========================================');
+    console.log('\\n🎉 Installation completed successfully!');
+    console.log('\\n📁 Files extracted to: ' + extractDir);
+    console.log('\\n⏱️  This window will stay open for 30 seconds...');
+    console.log('\\n💡 You can close this window manually by clicking the X button.');
+    
+    // Simple pause before closing
     setTimeout(() => {
-      console.log('\\n👋 Goodbye!');
+      console.log('\\n\\n👋 Goodbye!');
       process.exit(0);
-    }, 10000);
+    }, 30000);
     
   } catch (error) {
     showMessage('❌ Extraction failed:\\n' + error.message);
-    console.log('\\n⏱️  This window will close in 10 seconds...');
-    setTimeout(() => process.exit(1), 10000);
+    console.log('\\n==========================================');
+    console.log('        INSTALLATION FAILED!');
+    console.log('==========================================');
+    console.log('\\n❌ Installation failed!');
+    console.log('\\n🔍 Error details: ' + error.message);
+    console.log('\\n⏱️  This window will stay open for 30 seconds...');
+    console.log('\\n💡 You can close this window manually by clicking the X button.');
+    
+    setTimeout(() => {
+      console.log('\\n\\n👋 Goodbye!');
+      process.exit(1);
+    }, 30000);
   }
 }
 
-// Start extraction
-console.log('Starting extraction process...');
-extractFiles();
+// Add error handling to catch any silent failures
+process.on('uncaughtException', (error) => {
+  console.log('\\n❌ CRITICAL ERROR CAUGHT:');
+  console.log('Error: ' + error.message);
+  console.log('Stack: ' + error.stack);
+  console.log('\\n⏱️  Window will stay open for 30 seconds...');
+  
+  setTimeout(() => {
+    console.log('\\n\\n👋 Goodbye!');
+    process.exit(1);
+  }, 30000);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.log('\\n❌ UNHANDLED REJECTION:');
+  console.log('Reason: ' + reason);
+  console.log('\\n⏱️  Window will stay open for 30 seconds...');
+  
+  setTimeout(() => {
+    console.log('\\n\\n👋 Goodbye!');
+    process.exit(1);
+  }, 30000);
+});
+
+// Force console window to appear on Windows
+if (process.platform === 'win32') {
+  // Create a console window if one doesn't exist
+  try {
+    const { execSync } = require('child_process');
+    execSync('title Mod Installer', { stdio: 'ignore' });
+    
+    // Also try to allocate a console
+    try {
+      const { execSync } = require('child_process');
+      execSync('cmd /c echo Console allocated', { stdio: 'ignore' });
+    } catch (e) {
+      // Ignore errors
+    }
+  } catch (e) {
+    // Ignore errors
+  }
+  
+  // Force stdout to be available
+  if (!process.stdout.isTTY) {
+    // Don't override stdout.write with console.log to avoid circular reference
+    process.stdout.isTTY = true;
+  }
+}
+
+// Start extraction with immediate pause and error handling
+try {
+  console.log('==========================================');
+  console.log('           MOD INSTALLER STARTED');
+  console.log('==========================================');
+  console.log('\\n🚀 Starting extraction process...');
+  extractFiles();
+} catch (startupError) {
+  console.log('\\n❌ STARTUP ERROR:');
+  console.log('Error: ' + startupError.message);
+  console.log('Stack: ' + startupError.stack);
+  console.log('\\n⏱️  Window will stay open for 30 seconds...');
+  
+  setTimeout(() => {
+    console.log('\\n\\n👋 Goodbye!');
+    process.exit(1);
+  }, 30000);
+}
 `;
   }
 
@@ -699,11 +940,13 @@ extractFiles();
   async createExtractorExecutable(extractorPath, outputName, archivePath) {
     console.log("📦 Installing required packages...");
 
-    // Install required packages
+    // Install required packages with spinner
+    const installSpinner = ora("📦 Installing required packages...").start();
     try {
       execSync("npm install -g pkg", { stdio: "inherit" });
+      installSpinner.succeed("✅ Packages installed successfully");
     } catch (error) {
-      console.log("pkg already installed or failed to install");
+      installSpinner.fail("⚠️  pkg already installed or failed to install");
     }
 
     // Sanitize the output name for the file system
@@ -723,6 +966,8 @@ extractFiles();
       outputPath,
       "--target",
       "node18-win-x64",
+      "--compress",
+      "GZip",
     ];
 
     // Add custom icon if specified
@@ -737,8 +982,39 @@ extractFiles();
       console.log(`📋 Using custom manifest: ${this.config.manifestPath}`);
     }
 
-    console.log(`📦 Creating executable: ${pkgCommand.join(" ")}`);
-    execSync(pkgCommand.join(" "), { stdio: "inherit" });
+    // Package the extractor with pkg
+    const pkgSpinner = ora("📦 Creating executable...").start();
+    try {
+      console.log(`\n🔧 Running: ${pkgCommand.join(" ")}`);
+      execSync(pkgCommand.join(" "), { stdio: "inherit" });
+      pkgSpinner.succeed("✅ Executable created successfully");
+
+      // Create a batch file wrapper to ensure console window appears
+      let batchPath = outputPath + "_installer.bat";
+      const batchContent = `@echo off
+title ${this.config.appName}
+echo ==========================================
+echo    ${this.config.appName}
+echo ==========================================
+echo.
+echo Starting installation...
+echo.
+"%~dp0${path.basename(outputPath)}.exe"
+echo.
+echo ==========================================
+echo Installation completed!
+echo ==========================================
+echo.
+echo Press any key to exit...
+pause >nul
+`;
+
+      fs.writeFileSync(batchPath, batchContent);
+      console.log(`📋 Created console wrapper: ${path.basename(batchPath)}`);
+    } catch (error) {
+      pkgSpinner.fail("❌ Executable creation failed");
+      throw error;
+    }
 
     // Post-process the executable if needed
     if (this.config.branding) {
