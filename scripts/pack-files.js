@@ -214,6 +214,17 @@ class FilePacker {
     }
     
     fs.writeFileSync(extractorPath, extractorCode);
+    
+    // Report extractor code size before packaging
+    const extractorCodeStats = fs.statSync(extractorPath);
+    const extractorCodeSizeMB = (extractorCodeStats.size / (1024 * 1024)).toFixed(2);
+    const extractorCodeSizeKB = (extractorCodeStats.size / 1024).toFixed(0);
+    console.log(`\n📄 Extractor code size: ${extractorCodeSizeMB} MB (${extractorCodeSizeKB} KB)`);
+    console.log(`   - Archive (base64): ~${((archiveBase64.length) / (1024 * 1024)).toFixed(2)} MB`);
+    console.log(`   - Archive (original): ${(archiveSize / (1024 * 1024)).toFixed(2)} MB`);
+    console.log(`   - Base64 overhead: ~${((archiveBase64.length - archiveSize) / (1024 * 1024)).toFixed(2)} MB`);
+    console.log(`   - Extractor template: ~${((extractorCodeStats.size - archiveBase64.length) / (1024 * 1024)).toFixed(2)} MB`);
+    
     console.log('✅ Extractor code written to:', extractorPath);
     
     // Double-check the written file to ensure replacement persisted
@@ -256,11 +267,12 @@ class FilePacker {
     }, null, 2));
     await this.createExtractorExecutable(
       extractorPath,
-      outputFileName
+      outputFileName,
+      archiveSize
     );
 
-    // Cleanup temp directory
-    this.cleanup(tempDir);
+    // Cleanup temp directory (with retry logic for locked files)
+    await this.cleanup(tempDir);
 
     console.log(`✅ Created single-file installer: ${outputFileName}.exe`);
     console.log(`📦 Archive embedded: ${(archiveSize / 1024 / 1024).toFixed(2)} MB`);
@@ -502,7 +514,7 @@ class FilePacker {
   /**
    * Create the final executable using pkg
    */
-  async createExtractorExecutable(extractorPath, outputName) {
+  async createExtractorExecutable(extractorPath, outputName, archiveSize = 0) {
     console.log("📦 Installing required packages...");
 
     // Install required packages with spinner
@@ -510,7 +522,7 @@ class FilePacker {
     try {
       execSync("npm install -g pkg", { stdio: "inherit" });
       installSpinner.succeed("✅ Packages installed successfully");
-    } catch (error) {
+  } catch (error) {
       installSpinner.fail("⚠️  pkg already installed or failed to install");
     }
 
@@ -554,7 +566,7 @@ class FilePacker {
       "--target",
       "node18-win-x64",
       "--compress",
-      "GZip",
+      "Brotli",
       "--options",
       "max_old_space_size=4096",
     ];
@@ -580,15 +592,33 @@ class FilePacker {
       const pkgIgnorePath = path.join(tempDir, '.pkgignore');
       const templateAbsPath = path.resolve(originalCwd, 'installer-gui-template.js');
       const templateRelPath = path.relative(tempDir, templateAbsPath);
-      // Write ignore patterns - use both relative and absolute paths, and wildcards
+      // Write ignore patterns - exclude unnecessary dependencies and files
+      // This reduces executable size by preventing pkg from bundling unused modules
+      // The extractor only uses Node.js built-in modules (fs, path, os, child_process)
+      // so we can exclude all npm dependencies
       const ignorePatterns = [
         'installer-gui-template.js',
         '**/installer-gui-template.js',
         templateRelPath.replace(/\\/g, '/'), // Normalize path separators
         templateAbsPath.replace(/\\/g, '/'),
+        // Exclude all npm dependencies - extractor uses only built-in Node.js modules
+        '**/node_modules/**',
+        // Exclude test files and documentation
+        '**/*.test.js',
+        '**/*.spec.js',
+        '**/test/**',
+        '**/tests/**',
+        '**/__tests__/**',
+        '**/*.md',
+        '**/README*',
+        '**/CHANGELOG*',
+        '**/LICENSE*',
+        '**/*.d.ts',
+        '**/.git/**',
+        '**/.github/**',
       ].filter(p => p && !p.startsWith('..')); // Filter out invalid relative paths
       fs.writeFileSync(pkgIgnorePath, ignorePatterns.join('\n') + '\n');
-      console.log('Created .pkgignore to exclude template file');
+      console.log('Created .pkgignore to exclude unnecessary files and reduce size');
       
       // Verify extractor file exists
       if (!fs.existsSync(extractorPath)) {
@@ -662,7 +692,7 @@ class FilePacker {
           "--target",
           "node18-win-x64",
           "--compress",
-          "GZip",
+          "Brotli",
           "--options",
           "max_old_space_size=4096",
         ];
@@ -735,7 +765,7 @@ class FilePacker {
             if (fs.existsSync(altPath)) {
               executablePath = altPath;
               console.log('Found executable at:', executablePath);
-            } else {
+} else {
               console.warn('Cannot modify subsystem. Console window will appear.');
               console.warn('Searched paths:', [executablePath, altPath]);
             }
@@ -764,7 +794,7 @@ try {
         $bytes[$subsystemOffset] = 2
         [System.IO.File]::WriteAllBytes($filePath, $bytes)
         Write-Output "SUCCESS: Changed subsystem from 3 (CONSOLE) to 2 (WINDOWS)"
-        } else {
+    } else {
         Write-Output "INFO: Subsystem is already $currentSubsystem (not CONSOLE)"
       }
     }
@@ -786,7 +816,7 @@ try {
                 setTimeout(() => {
                   try { if (fs.existsSync(tempPs)) fs.unlinkSync(tempPs); } catch (e) {}
                 }, 1000);
-              } catch (psError) {
+        } catch (psError) {
                 console.error('❌ PowerShell method failed!');
                 console.error('PowerShell error:', psError.message);
                 if (psError.stdout) console.error('stdout:', psError.stdout);
@@ -821,7 +851,7 @@ $subsystemOffset = $peOffset + 92
 $subsystem = $bytes[$subsystemOffset]
 if ($subsystem -eq 2) {
   Write-Output "VERIFIED: Subsystem is WINDOWS (2)"
-  } else {
+        } else {
   Write-Output "WARNING: Subsystem is $subsystem (expected 2 for WINDOWS)"
 }
                 `.trim();
@@ -839,7 +869,7 @@ if ($subsystem -eq 2) {
               } catch (verifyError) {
                 // Ignore verification errors
               }
-            } else {
+      } else {
               console.warn('⚠️  Warning: Subsystem modification was not successful. Console window will appear.');
             }
           }
@@ -949,11 +979,65 @@ if ($subsystem -eq 2) {
   }
 
   /**
-   * Cleanup temporary files
+   * Cleanup temporary files with retry logic for locked files
    */
-  cleanup(tempDir) {
-    if (fs.existsSync(tempDir)) {
+  async cleanup(tempDir) {
+    if (!fs.existsSync(tempDir)) {
+      return;
+    }
+    
+    // Retry cleanup with exponential backoff
+    const maxRetries = 5;
+    const baseDelay = 500; // Start with 500ms delay
+    
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        // Try to remove files individually first (more reliable on Windows)
+        try {
+          const files = fs.readdirSync(tempDir);
+          for (const file of files) {
+            const filePath = path.join(tempDir, file);
+            try {
+              const stat = fs.statSync(filePath);
+              if (stat.isDirectory()) {
+                fs.rmSync(filePath, { recursive: true, force: true });
+              } else {
+                fs.unlinkSync(filePath);
+              }
+            } catch (fileError) {
+              // Ignore individual file errors, try to continue
+              console.warn(`⚠️  Could not delete ${file}: ${fileError.message}`);
+            }
+          }
+        } catch (readError) {
+          // If we can't read the directory, try to remove it anyway
+        }
+        
+        // Now try to remove the directory itself
       fs.rmSync(tempDir, { recursive: true, force: true });
+        return; // Success!
+      } catch (error) {
+        const isLastAttempt = attempt === maxRetries - 1;
+        
+        if (error.code === 'EBUSY' || error.code === 'ENOTEMPTY' || error.code === 'EPERM') {
+          if (isLastAttempt) {
+            // On final attempt, just warn and continue
+            console.warn(`⚠️  Warning: Could not fully clean up temp directory: ${tempDir}`);
+            console.warn(`   Error: ${error.message}`);
+            console.warn(`   You may need to manually delete: ${tempDir}`);
+            return;
+          }
+          
+          // Wait before retrying (exponential backoff)
+          const delay = baseDelay * Math.pow(2, attempt);
+          console.log(`⏳ Temp directory locked, retrying in ${delay}ms... (attempt ${attempt + 1}/${maxRetries})`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+        } else {
+          // For other errors, don't retry
+          console.warn(`⚠️  Warning: Could not clean up temp directory: ${error.message}`);
+          return;
+        }
+      }
     }
   }
 }
