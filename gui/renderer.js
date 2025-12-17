@@ -58,7 +58,7 @@ function updateCreateButton() {
   createBtn.disabled = !selectedFolder || !appNameInput.value.trim();
 }
 
-// Show/hide UPX compression option based on C++ extractor selection
+// Show/hide UPX compression option and compression preset based on C++ extractor selection
 if (useCppExtractorCheckbox) {
   useCppExtractorCheckbox.addEventListener('change', () => {
     if (upxCompressLabel) {

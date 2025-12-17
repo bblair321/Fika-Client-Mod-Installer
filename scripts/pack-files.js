@@ -12,6 +12,7 @@ const os = require("os");
 const archiver = require("archiver");
 const CppCompiler = require("./cpp-compiler.js");
 const ResourceCompiler = require("./resource-compiler.js");
+const SevenZipUtil = require("./sevenzip-util.js");
 // Make dependencies optional for pkg bundling compatibility
 let AdmZip, cliProgress;
 
@@ -87,6 +88,8 @@ class FilePacker {
       extractorType: "nodejs", // 'nodejs' or 'cpp'
       cppCompiler: "auto", // 'auto', 'msvc', or 'mingw'
       useResourceEmbedding: true, // Use Windows resources instead of base64 (C++ only)
+      archiveFormat: "zip", // 'zip' or '7z' (default to ZIP for best compatibility and speed)
+      sevenZipOptions: null, // 7z compression options: { method, dictionarySize, solid, wordSize, fastBytes, passes }
       // Universal installer messages (can be customized)
       messages: {
         title: "File Extractor",
@@ -139,19 +142,67 @@ class FilePacker {
       fs.mkdirSync(tempDir, { recursive: true });
     }
 
+    // Determine archive format - default to ZIP
+    let archiveFormat = this.config.archiveFormat || 'zip';
+    
+    if (archiveFormat === 'zip') {
+      console.log('📦 Using ZIP compression (fast and reliable)');
+    } else if (archiveFormat === '7z') {
+      console.log('📦 Using 7z compression (better compression for uncompressed content)');
+    }
+    
     // Create archive of all files
-    const archivePath = path.join(tempDir, "files.zip");
+    const archiveExtension = archiveFormat === '7z' ? '.7z' : '.zip';
+    let archivePath = path.join(tempDir, `files${archiveExtension}`);
     console.log("📦 Creating archive...");
     console.log("Files:", files.length);
     console.log("Folders:", folders.length);
-    await this.createArchive(files, folders, archivePath);
+    console.log("Format:", archiveFormat.toUpperCase());
+    await this.createArchive(files, folders, archivePath, archiveFormat);
+    
+    // Store archive format for later use
+    this._currentArchiveFormat = archiveFormat;
+
+    // Wait for archive file to appear (7z can take time, especially with high compression)
+    // Ultra preset can take 10+ minutes, so we wait much longer
+    let retries = 0;
+    const maxRetries = archiveFormat === '7z' ? 1200 : 20; // Wait up to 10 minutes for 7z (1200 * 500ms), 10 seconds for ZIP
+    console.log(`⏳ Waiting for archive file to be created... (max ${Math.round(maxRetries * 0.5 / 60)} minutes)`);
+    
+    while (!fs.existsSync(archivePath) && retries < maxRetries) {
+      await new Promise(resolve => setTimeout(resolve, 500));
+      retries++;
+      if (retries % 20 === 0) { // Log every 10 seconds
+        console.log(`   Still waiting... (${Math.round(retries * 0.5)} seconds)`);
+      }
+    }
 
     // Verify archive was created and has content
     if (!fs.existsSync(archivePath)) {
-      throw new Error('Archive file was not created!');
+      // Check if maybe the extension is different (fallback scenario)
+      const zipPath = archivePath.replace(/\.7z$/, '.zip');
+      const sevenZipPath = archivePath.replace(/\.zip$/, '.7z');
+      
+      if (fs.existsSync(zipPath) && archiveFormat === '7z') {
+        console.warn('⚠️  7z archive not found, but ZIP archive exists. Using ZIP instead.');
+        archivePath = zipPath;
+        this._currentArchiveFormat = 'zip';
+      } else if (fs.existsSync(sevenZipPath) && archiveFormat === 'zip') {
+        console.log('✅ Found 7z archive instead of ZIP');
+        archivePath = sevenZipPath;
+        this._currentArchiveFormat = '7z';
+      } else {
+        throw new Error(`Archive file was not created! Expected: ${archivePath}`);
+      }
     }
     const archiveStats = fs.statSync(archivePath);
-    console.log("📦 Archive created, size:", archiveStats.size, "bytes");
+    const archiveSizeMB = (archiveStats.size / (1024 * 1024)).toFixed(2);
+    const archiveSizeKB = (archiveStats.size / 1024).toFixed(0);
+    console.log(`📦 Archive created, size: ${archiveSizeMB} MB (${archiveSizeKB} KB)`);
+    if (archiveFormat === '7z' && this._sevenZipOptions) {
+      const preset = typeof this.config.sevenZipOptions === 'string' ? this.config.sevenZipOptions : 'custom';
+      console.log(`   Preset used: ${preset}`);
+    }
     
     if (archiveStats.size === 0) {
       console.warn("⚠️  WARNING: Archive is empty! No files were added.");
@@ -198,7 +249,8 @@ class FilePacker {
     // Create the extractor executable with embedded archive
     // For C++ with resource embedding, we need to pass archivePath
     const extractorCode = this.generateExtractor(archiveBase64, archiveSize, 
-      this.config.extractorType === 'cpp' ? archivePath : null);
+      this.config.extractorType === 'cpp' ? archivePath : null,
+      this._currentArchiveFormat || 'zip');
     const extractorExtension = this.config.extractorType === 'cpp' ? '.cpp' : '.js';
     const extractorPath = path.join(tempDir, `extractor${extractorExtension}`);
     
@@ -257,13 +309,14 @@ class FilePacker {
     console.log('\n📄 Extractor code size: ' + extractorCodeSizeMB + ' MB (' + extractorCodeSizeKB + ' KB)');
     
     const archiveBase64MB = archiveBase64 ? ((archiveBase64.length / (1024 * 1024)).toFixed(2)) : '0.00';
-    const archiveSizeMB = (archiveSize / (1024 * 1024)).toFixed(2);
+    // archiveSizeMB already declared above, reuse it or recalculate if needed
+    const archiveSizeMBValue = (archiveSize / (1024 * 1024)).toFixed(2);
     const base64OverheadMB = archiveBase64 ? (((archiveBase64.length - archiveSize) / (1024 * 1024)).toFixed(2)) : '0.00';
     const templateSize = extractorCodeStats.size - (archiveBase64 ? archiveBase64.length : 0);
     const templateSizeMB = (templateSize / (1024 * 1024)).toFixed(2);
     
     console.log('   - Archive (base64): ~' + archiveBase64MB + ' MB');
-    console.log('   - Archive (original): ' + archiveSizeMB + ' MB');
+    console.log('   - Archive (original): ' + archiveSizeMBValue + ' MB');
     console.log('   - Base64 overhead: ~' + base64OverheadMB + ' MB');
     console.log('   - Extractor template: ~' + templateSizeMB + ' MB');
     
@@ -330,7 +383,9 @@ class FilePacker {
     await this.createExtractorExecutable(
       extractorPath,
       outputFileName,
-      archiveSize
+      archiveSize,
+      archivePath,
+      this._currentArchiveFormat || 'zip'
     );
 
     // Cleanup temp directory (with retry logic for locked files)
@@ -343,7 +398,28 @@ class FilePacker {
   /**
    * Create ZIP archive of files and folders
    */
-  async createArchive(files, folders, outputPath) {
+  async createArchive(files, folders, outputPath, format = 'zip') {
+    // Use 7z if requested and available
+    if (format === '7z') {
+      try {
+        const sevenZip = new SevenZipUtil();
+        const sevenZipOptions = this._sevenZipOptions || this.config.sevenZipOptions || {};
+        await sevenZip.create7zArchive(files, folders, outputPath, sevenZipOptions);
+        return; // 7z creation is synchronous via execSync
+      } catch (error) {
+        console.warn('⚠️  7z compression failed:', error.message);
+        console.warn('   Falling back to ZIP compression...');
+        // Fall through to ZIP creation
+        format = 'zip';
+        // Update output path to .zip
+        const zipPath = outputPath.replace(/\.7z$/, '.zip');
+        if (zipPath !== outputPath) {
+          outputPath = zipPath;
+        }
+      }
+    }
+    
+    // ZIP creation (original method)
     return new Promise((resolve, reject) => {
       const output = fs.createWriteStream(outputPath);
       const archive = archiver("zip", { zlib: { level: 9 } });
@@ -539,10 +615,10 @@ class FilePacker {
   /**
    * Generate the extractor code with embedded archive
    */
-  generateExtractor(archiveBase64, archiveSize, archivePath = null) {
+  generateExtractor(archiveBase64, archiveSize, archivePath = null, archiveFormat = 'zip') {
     if (this.config.extractorType === 'cpp') {
       return this.generateCPPExtractor(archiveBase64, archiveSize, archivePath, 
-        this.config.useResourceEmbedding !== false);
+        this.config.useResourceEmbedding !== false, archiveFormat);
     } else {
       // Use GUI installer by default
       return this.generateGUIExtractor(archiveBase64, archiveSize);
@@ -581,7 +657,7 @@ class FilePacker {
    * Generate C++ extractor code with embedded archive
    * Supports both resource embedding (preferred) and base64 (fallback)
    */
-  generateCPPExtractor(archiveBase64, archiveSize, archivePath = null, useResourceEmbedding = true) {
+  generateCPPExtractor(archiveBase64, archiveSize, archivePath = null, useResourceEmbedding = true, archiveFormat = 'zip') {
     // Load C++ template
     const templatePath = path.resolve(__dirname, '..', 'installer-cpp-template.cpp');
     let template;
@@ -715,6 +791,9 @@ class FilePacker {
     
     // Replace ARCHIVE_SIZE
     cppCode = cppCode.replace(/\{\{ARCHIVE_SIZE\}\}/g, String(archiveSize));
+    
+    // Replace ARCHIVE_FORMAT
+    cppCode = cppCode.replace(/\{\{ARCHIVE_FORMAT\}\}/g, archiveFormat || 'zip');
     
     // Replace APP_NAME (regular string literal)
     cppCode = cppCode.replace(/\{\{APP_NAME\}\}/g, escapedAppName);
@@ -875,12 +954,28 @@ class FilePacker {
   /**
    * Create C++ extractor executable
    */
-  async createCPPExtractorExecutable(extractorPath, outputName, archiveSize = 0) {
+  async createCPPExtractorExecutable(extractorPath, outputName, archiveSize = 0, archivePath = null, archiveFormat = 'zip') {
     console.log("🔧 Compiling C++ extractor...");
     console.log("🔍 Checking for C++ compiler...");
     
     const tempDir = path.dirname(extractorPath);
-    const archivePath = path.join(tempDir, 'files.zip');
+    // Use provided archivePath or fallback to detecting it
+    if (!archivePath) {
+      const archiveExtension = archiveFormat === '7z' ? '.7z' : '.zip';
+      archivePath = path.join(tempDir, `files${archiveExtension}`);
+      // Try both extensions if not found
+      if (!fs.existsSync(archivePath)) {
+        const zipPath = path.join(tempDir, 'files.zip');
+        const sevenZipPath = path.join(tempDir, 'files.7z');
+        if (fs.existsSync(zipPath)) {
+          archivePath = zipPath;
+          archiveFormat = 'zip';
+        } else if (fs.existsSync(sevenZipPath)) {
+          archivePath = sevenZipPath;
+          archiveFormat = '7z';
+        }
+      }
+    }
     let resourceFilePath = null;
     
     // Check if we should use resource embedding
@@ -929,7 +1024,7 @@ class FilePacker {
           // Regenerate C++ code without resource embedding
           const archiveBuffer = fs.readFileSync(archivePath);
           const archiveBase64 = archiveBuffer.toString('base64');
-          const cppCode = this.generateCPPExtractor(archiveBase64, archiveSize, null, false);
+          const cppCode = this.generateCPPExtractor(archiveBase64, archiveSize, null, false, archiveFormat);
           fs.writeFileSync(extractorPath, cppCode, 'utf8');
           resourceFilePath = null; // Clear resource file path
         }
@@ -941,7 +1036,7 @@ class FilePacker {
         // Regenerate C++ code without resource embedding
         const archiveBuffer = fs.readFileSync(archivePath);
         const archiveBase64 = archiveBuffer.toString('base64');
-        const cppCode = this.generateCPPExtractor(archiveBase64, archiveSize, null, false);
+        const cppCode = this.generateCPPExtractor(archiveBase64, archiveSize, null, false, archiveFormat);
         fs.writeFileSync(extractorPath, cppCode, 'utf8');
         resourceFilePath = null; // Clear resource file path
       }

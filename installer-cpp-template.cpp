@@ -27,6 +27,7 @@ const size_t embeddedArchiveSize = {{ARCHIVE_SIZE}};
 #endif
 const char* appName = "{{APP_NAME}}";
 const char* htaHtml = R"RAW({{HTA_HTML}})RAW";
+const char* archiveFormat = "{{ARCHIVE_FORMAT}}"; // "zip" or "7z"
 
 // Communication file path
 std::string getCommFile() {
@@ -125,6 +126,67 @@ bool fileExists(const std::string& filePath) {
             !(dwAttrib & FILE_ATTRIBUTE_DIRECTORY));
 }
 
+// Extract 7z archive using 7z.exe
+bool extract7z(const std::string& archivePath, const std::string& destPath) {
+    // Try to find 7z.exe
+    std::vector<std::string> sevenZipPaths = {
+        "7z.exe",  // In PATH
+        "C:\\Program Files\\7-Zip\\7z.exe",
+        "C:\\Program Files (x86)\\7-Zip\\7z.exe"
+    };
+    
+    std::string sevenZipExe;
+    for (const auto& zipPath : sevenZipPaths) {
+        // Check if file exists
+        DWORD dwAttrib = GetFileAttributesA(zipPath.c_str());
+        if (dwAttrib != INVALID_FILE_ATTRIBUTES && !(dwAttrib & FILE_ATTRIBUTE_DIRECTORY)) {
+            sevenZipExe = zipPath;
+            break;
+        }
+    }
+    
+    if (sevenZipExe.empty()) {
+        return false; // 7z.exe not found
+    }
+    
+    // Build 7z command: 7z.exe x archive.7z -o"destPath" -y
+    std::string command = "\"" + sevenZipExe + "\" x \"" + archivePath + "\" -o\"" + destPath + "\" -y";
+    
+    STARTUPINFOA si = { sizeof(si) };
+    PROCESS_INFORMATION pi;
+    si.dwFlags = STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_HIDE;
+    
+    char* cmdLine = new char[command.length() + 1];
+    strcpy_s(cmdLine, command.length() + 1, command.c_str());
+    
+    bool success = CreateProcessA(
+        NULL,
+        cmdLine,
+        NULL,
+        NULL,
+        FALSE,
+        0,
+        NULL,
+        NULL,
+        &si,
+        &pi
+    );
+    
+    delete[] cmdLine;
+    
+    if (success) {
+        WaitForSingleObject(pi.hProcess, 120000); // 120 second timeout (7z can be slower)
+        DWORD exitCode;
+        GetExitCodeProcess(pi.hProcess, &exitCode);
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+        return exitCode == 0;
+    }
+    
+    return false;
+}
+
 // Extract ZIP using PowerShell
 bool extractZip(const std::string& zipPath, const std::string& destPath) {
     // Escape paths for PowerShell
@@ -194,32 +256,46 @@ bool extractFiles(const std::string& extractDir) {
             return false;
         }
         
-        // Write temp ZIP file
+        // Determine archive format
+        std::string format(archiveFormat);
+        std::string extension = (format == "7z") ? ".7z" : ".zip";
+        
+        // Write temp archive file
         char tempPath[MAX_PATH];
         if (GetTempPathA(MAX_PATH, tempPath) == 0) {
             return false;
         }
         
-        std::string tempZip = tempPath;
-        if (tempZip.back() != '\\') {
-            tempZip += "\\";
+        std::string tempArchive = tempPath;
+        if (tempArchive.back() != '\\') {
+            tempArchive += "\\";
         }
-        tempZip += "extract-";
-        tempZip += std::to_string(GetTickCount());
-        tempZip += ".zip";
+        tempArchive += "extract-";
+        tempArchive += std::to_string(GetTickCount());
+        tempArchive += extension;
         
-        std::ofstream zipFile(tempZip, std::ios::binary);
-        if (!zipFile.is_open()) {
+        std::ofstream archiveFile(tempArchive, std::ios::binary);
+        if (!archiveFile.is_open()) {
             return false;
         }
-        zipFile.write(reinterpret_cast<const char*>(archiveData.data()), archiveData.size());
-        zipFile.close();
+        archiveFile.write(reinterpret_cast<const char*>(archiveData.data()), archiveData.size());
+        archiveFile.close();
         
-        // Extract using PowerShell
-        bool success = extractZip(tempZip, extractDir);
+        // Extract based on format
+        bool success = false;
+        if (format == "7z") {
+            success = extract7z(tempArchive, extractDir);
+            if (!success) {
+                // Fallback: try as ZIP if 7z extraction fails
+                success = extractZip(tempArchive, extractDir);
+            }
+        } else {
+            // ZIP format
+            success = extractZip(tempArchive, extractDir);
+        }
         
         // Clean up temp file
-        DeleteFileA(tempZip.c_str());
+        DeleteFileA(tempArchive.c_str());
         
         return success;
     } catch (...) {

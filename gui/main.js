@@ -164,7 +164,8 @@ ipcMain.handle('create-installer', async (event, options) => {
       defaultExtractPath: options.extractPath || null,
       extractorType: options.extractorType || 'nodejs',
       cppCompiler: options.cppCompiler || 'auto',
-      compressWithUPX: options.compressWithUPX || false
+      compressWithUPX: options.compressWithUPX || false,
+      sevenZipOptions: options.sevenZipOptions || null
     });
 
     // Send progress updates
