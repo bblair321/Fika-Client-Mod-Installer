@@ -172,7 +172,7 @@ class CppCompiler {
     const outputDir = path.dirname(outputPath);
     const outputName = path.basename(outputPath, '.exe');
     
-    // MSVC command: cl.exe /EHsc /O2 /MT source.cpp /link /SUBSYSTEM:WINDOWS /OUT:output.exe
+    // MSVC command: cl.exe /EHsc /O2 /MT source.cpp resource.res /link /SUBSYSTEM:WINDOWS /OUT:output.exe
     const clCommand = [
       `"${clPath}"`,
       '/EHsc',           // Exception handling
@@ -180,6 +180,9 @@ class CppCompiler {
       '/MT',             // Multi-threaded static runtime
       '/W3',             // Warning level 3
       `"${sourcePath}"`,
+      ...(options.resourceFile && fs.existsSync(options.resourceFile) 
+        ? [`"${path.resolve(options.resourceFile)}"`] 
+        : []), // Add .res file if provided
       '/link',
       '/SUBSYSTEM:WINDOWS',  // Windows subsystem (no console)
       `/OUT:"${outputPath}"`,
@@ -241,13 +244,26 @@ class CppCompiler {
   compileMinGW(sourcePath, outputPath, gppPath, options = {}) {
     const outputDir = path.dirname(outputPath);
     
-    // MinGW command: g++.exe -O2 -static -mwindows source.cpp -o output.exe
+    // MinGW command: g++.exe -O2 -static -mwindows source.cpp resource.o -o output.exe
+    // Note: MinGW uses .o files (from windres), not .res files (from rc.exe)
+    const resourceFile = options.resourceFile && fs.existsSync(options.resourceFile) 
+      ? path.resolve(options.resourceFile)
+      : null;
+    
+    // Check if resource file is .res (MSVC format) - MinGW can't link .res files
+    if (resourceFile && resourceFile.endsWith('.res')) {
+      console.warn('⚠️  Warning: .res file provided but MinGW requires .o file');
+      console.warn('   Resource embedding may not work with MinGW. Consider using MSVC or windres.');
+      // Try to convert or skip
+    }
+    
     const gppCommand = [
       `"${gppPath}"`,
       '-O2',             // Optimize for speed
       '-static',         // Static linking
       '-mwindows',       // Windows subsystem (no console)
       `"${sourcePath}"`,
+      ...(resourceFile ? [`"${resourceFile}"`] : []), // Add resource file if provided (.o for MinGW)
       '-o',
       `"${outputPath}"`,
       '-s'               // Strip symbols

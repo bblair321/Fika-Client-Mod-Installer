@@ -1,0 +1,6 @@
+// Windows Resource File Template
+// This file will be populated with the binary archive path during build
+
+// Resource ID 101 = embedded archive
+101 RCDATA "{{ARCHIVE_BINARY_PATH}}"
+

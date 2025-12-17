@@ -16,9 +16,15 @@
 #pragma comment(lib, "shell32.lib")
 
 // Embedded data - will be replaced during build
-// Use raw string literals to handle large strings and special characters
+// Resource embedding is preferred (no base64 overhead), but base64 is kept as fallback
+#ifdef USE_RESOURCE_EMBEDDING
+// Archive is embedded as Windows resource (ID 101)
+const size_t embeddedArchiveSize = {{ARCHIVE_SIZE}};
+#else
+// Fallback: base64 encoded archive
 const char* embeddedArchiveBase64 = R"RAW({{ARCHIVE_BASE64}})RAW";
 const size_t embeddedArchiveSize = {{ARCHIVE_SIZE}};
+#endif
 const char* appName = "{{APP_NAME}}";
 const char* htaHtml = R"RAW({{HTA_HTML}})RAW";
 
@@ -36,7 +42,38 @@ std::string getCommFile() {
     return commFile;
 }
 
-// Base64 decoding
+// Load archive from Windows resource (preferred method - no base64 overhead)
+#ifdef USE_RESOURCE_EMBEDDING
+std::vector<unsigned char> loadArchiveFromResource() {
+    HRSRC hResource = FindResourceA(NULL, MAKEINTRESOURCEA(101), RT_RCDATA);
+    if (!hResource) {
+        return {};
+    }
+    
+    HGLOBAL hMemory = LoadResource(NULL, hResource);
+    if (!hMemory) {
+        return {};
+    }
+    
+    DWORD size = SizeofResource(NULL, hResource);
+    if (size == 0) {
+        return {};
+    }
+    
+    LPVOID data = LockResource(hMemory);
+    if (!data) {
+        return {};
+    }
+    
+    std::vector<unsigned char> result(size);
+    memcpy(result.data(), data, size);
+    
+    return result;
+}
+#endif
+
+// Base64 decoding (fallback method)
+#ifndef USE_RESOURCE_EMBEDDING
 std::vector<unsigned char> base64Decode(const std::string& encoded) {
     const std::string chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     std::vector<unsigned char> result;
@@ -56,6 +93,7 @@ std::vector<unsigned char> base64Decode(const std::string& encoded) {
     }
     return result;
 }
+#endif
 
 // Write string to file
 bool writeStringToFile(const std::string& filePath, const std::string& content) {
@@ -143,9 +181,14 @@ bool extractFiles(const std::string& extractDir) {
         // Create directory if it doesn't exist
         CreateDirectoryA(extractDir.c_str(), NULL);
         
-        // Decode base64 archive
+        // Load archive (from resource or base64)
+        std::vector<unsigned char> archiveData;
+#ifdef USE_RESOURCE_EMBEDDING
+        archiveData = loadArchiveFromResource();
+#else
         std::string base64Str(embeddedArchiveBase64);
-        std::vector<unsigned char> archiveData = base64Decode(base64Str);
+        archiveData = base64Decode(base64Str);
+#endif
         
         if (archiveData.empty()) {
             return false;

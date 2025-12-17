@@ -11,6 +11,7 @@ const { execSync } = require("child_process");
 const os = require("os");
 const archiver = require("archiver");
 const CppCompiler = require("./cpp-compiler.js");
+const ResourceCompiler = require("./resource-compiler.js");
 // Make dependencies optional for pkg bundling compatibility
 let AdmZip, cliProgress;
 
@@ -85,6 +86,7 @@ class FilePacker {
       defaultExtractPath: null,
       extractorType: "nodejs", // 'nodejs' or 'cpp'
       cppCompiler: "auto", // 'auto', 'msvc', or 'mingw'
+      useResourceEmbedding: true, // Use Windows resources instead of base64 (C++ only)
       // Universal installer messages (can be customized)
       messages: {
         title: "File Extractor",
@@ -194,22 +196,41 @@ class FilePacker {
     console.log("📦 Archive size:", archiveSize, "bytes");
 
     // Create the extractor executable with embedded archive
-    const extractorCode = this.generateExtractor(archiveBase64, archiveSize);
+    // For C++ with resource embedding, we need to pass archivePath
+    const extractorCode = this.generateExtractor(archiveBase64, archiveSize, 
+      this.config.extractorType === 'cpp' ? archivePath : null);
     const extractorExtension = this.config.extractorType === 'cpp' ? '.cpp' : '.js';
     const extractorPath = path.join(tempDir, `extractor${extractorExtension}`);
     
+    // Check if using resource embedding (for C++ only)
+    const usingResourceEmbedding = this.config.extractorType === 'cpp' && 
+                                   this.config.useResourceEmbedding !== false &&
+                                   extractorCode.includes('#define USE_RESOURCE_EMBEDDING');
+    
     // Verify the replacement worked before writing
-    if (extractorCode.includes('{{ARCHIVE_BASE64}}') || 
-        extractorCode.includes('{{ARCHIVE_SIZE}}') || 
-        extractorCode.includes('{{APP_NAME}}') ||
-        (this.config.extractorType === 'cpp' && extractorCode.includes('{{HTA_HTML}}'))) {
+    const missingPlaceholders = [];
+    if (!usingResourceEmbedding && extractorCode.includes('{{ARCHIVE_BASE64}}')) {
+      missingPlaceholders.push('{{ARCHIVE_BASE64}}');
+    }
+    if (extractorCode.includes('{{ARCHIVE_SIZE}}')) {
+      missingPlaceholders.push('{{ARCHIVE_SIZE}}');
+    }
+    if (extractorCode.includes('{{APP_NAME}}')) {
+      missingPlaceholders.push('{{APP_NAME}}');
+    }
+    if (this.config.extractorType === 'cpp' && extractorCode.includes('{{HTA_HTML}}')) {
+      missingPlaceholders.push('{{HTA_HTML}}');
+    }
+    
+    if (missingPlaceholders.length > 0) {
       console.error('❌ CRITICAL ERROR: Placeholder still in extractor code!');
+      console.error('Missing placeholders:', missingPlaceholders.join(', '));
       console.error('This means the replacement failed. Cannot create installer.');
       throw new Error('Placeholder replacement failed in extractor code');
     }
     
-    // Verify archive data is actually in the code (check first 50 chars of base64)
-    if (archiveBase64 && archiveBase64.length > 0) {
+    // Verify archive data is actually in the code (only for base64, not resources)
+    if (!usingResourceEmbedding && archiveBase64 && archiveBase64.length > 0) {
       // For C++, the archive is escaped, so we check for a substring
       const archivePrefix = archiveBase64.substring(0, Math.min(50, archiveBase64.length));
       const escapedPrefix = this.config.extractorType === 'cpp' 
@@ -223,6 +244,8 @@ class FilePacker {
       } else {
         console.log('✅ Verified: Archive data is present in extractor code');
       }
+    } else if (usingResourceEmbedding) {
+      console.log('✅ Verified: Using resource embedding (archive will be linked as resource)');
     }
     
     fs.writeFileSync(extractorPath, extractorCode);
@@ -248,13 +271,21 @@ class FilePacker {
     
     // Double-check the written file to ensure replacement persisted
     const writtenContent = fs.readFileSync(extractorPath, 'utf8');
-    const placeholderPos = writtenContent.indexOf('{{ARCHIVE_BASE64}}');
-    if (placeholderPos !== -1) {
-      console.error('❌ CRITICAL: Placeholder still in written file at position:', placeholderPos);
-      console.error('Context around placeholder:', writtenContent.substring(Math.max(0, placeholderPos - 100), placeholderPos + 150));
-      throw new Error(`Placeholder replacement did not persist in extractor${extractorExtension} file`);
+    const usingResourceEmbeddingInFile = this.config.extractorType === 'cpp' && 
+                                         writtenContent.includes('#define USE_RESOURCE_EMBEDDING');
+    
+    // Check for ARCHIVE_BASE64 placeholder (only if not using resources)
+    if (!usingResourceEmbeddingInFile) {
+      const placeholderPos = writtenContent.indexOf('{{ARCHIVE_BASE64}}');
+      if (placeholderPos !== -1) {
+        console.error('❌ CRITICAL: Placeholder still in written file at position:', placeholderPos);
+        console.error('Context around placeholder:', writtenContent.substring(Math.max(0, placeholderPos - 100), placeholderPos + 150));
+        throw new Error(`Placeholder replacement did not persist in extractor${extractorExtension} file`);
+      }
     }
-    if (archiveBase64 && archiveBase64.length > 0) {
+    
+    // Check for archive data in file (only if not using resources - with resources, data is in .res file)
+    if (!usingResourceEmbeddingInFile && archiveBase64 && archiveBase64.length > 0) {
       const archivePrefix = archiveBase64.substring(0, Math.min(50, archiveBase64.length));
       const escapedPrefix = this.config.extractorType === 'cpp' 
         ? archivePrefix.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
@@ -270,8 +301,13 @@ class FilePacker {
       } else {
         console.log('✅ Verified: Archive data found in written file at position:', archivePos);
       }
+    } else if (usingResourceEmbeddingInFile) {
+      console.log('✅ Verified: Resource embedding enabled (archive will be linked from resource file)');
     }
-    console.log('✅ Verified: Written file contains replaced archive data');
+    
+    if (!usingResourceEmbeddingInFile) {
+      console.log('✅ Verified: Written file contains replaced archive data');
+    }
     
     // Create package.json only for Node.js extractor
     if (this.config.extractorType !== 'cpp') {
@@ -503,9 +539,10 @@ class FilePacker {
   /**
    * Generate the extractor code with embedded archive
    */
-  generateExtractor(archiveBase64, archiveSize) {
+  generateExtractor(archiveBase64, archiveSize, archivePath = null) {
     if (this.config.extractorType === 'cpp') {
-      return this.generateCPPExtractor(archiveBase64, archiveSize);
+      return this.generateCPPExtractor(archiveBase64, archiveSize, archivePath, 
+        this.config.useResourceEmbedding !== false);
     } else {
       // Use GUI installer by default
       return this.generateGUIExtractor(archiveBase64, archiveSize);
@@ -513,9 +550,38 @@ class FilePacker {
   }
 
   /**
-   * Generate C++ extractor code with embedded archive
+   * Generate Windows resource file (.rc) for embedding binary archive
    */
-  generateCPPExtractor(archiveBase64, archiveSize) {
+  generateResourceFile(archivePath, outputDir) {
+    const templatePath = path.resolve(__dirname, '..', 'installer-resource-template.rc');
+    let template;
+    
+    try {
+      template = fs.readFileSync(templatePath, 'utf8');
+    } catch (error) {
+      throw new Error(`Failed to load resource template: ${error.message}. Make sure installer-resource-template.rc exists.`);
+    }
+    
+    // Use absolute path for archive (required by rc.exe)
+    const absoluteArchivePath = path.resolve(archivePath);
+    
+    // Replace placeholder with archive path
+    // Escape backslashes for Windows paths in .rc file
+    const escapedPath = absoluteArchivePath.replace(/\\/g, '\\\\');
+    const rcCode = template.replace(/\{\{ARCHIVE_BINARY_PATH\}\}/g, escapedPath);
+    
+    // Write .rc file
+    const rcFilePath = path.join(outputDir, 'archive.rc');
+    fs.writeFileSync(rcFilePath, rcCode, 'utf8');
+    
+    return rcFilePath;
+  }
+
+  /**
+   * Generate C++ extractor code with embedded archive
+   * Supports both resource embedding (preferred) and base64 (fallback)
+   */
+  generateCPPExtractor(archiveBase64, archiveSize, archivePath = null, useResourceEmbedding = true) {
     // Load C++ template
     const templatePath = path.resolve(__dirname, '..', 'installer-cpp-template.cpp');
     let template;
@@ -532,6 +598,27 @@ class FilePacker {
       htaHtml = this.extractHTAHTML();
     } catch (error) {
       throw new Error(`Failed to extract HTA HTML: ${error.message}`);
+    }
+    
+    // Determine embedding method
+    const useResource = useResourceEmbedding && archivePath && fs.existsSync(archivePath);
+    
+    if (useResource) {
+      // Resource embedding: define USE_RESOURCE_EMBEDDING
+      template = '#define USE_RESOURCE_EMBEDDING\n' + template;
+      console.log('📦 Using Windows resource embedding (no base64 overhead)');
+    } else {
+      // Base64 fallback: remove resource code sections, keep base64
+      // Remove #ifdef USE_RESOURCE_EMBEDDING blocks (including the resource loading function)
+      template = template.replace(/#ifdef USE_RESOURCE_EMBEDDING[\s\S]*?#else/g, '');
+      // Remove #ifndef USE_RESOURCE_EMBEDDING blocks (keep base64 code)
+      template = template.replace(/#ifndef USE_RESOURCE_EMBEDDING[\s\S]*?#endif/g, '');
+      // Remove any remaining #ifdef USE_RESOURCE_EMBEDDING blocks
+      template = template.replace(/#ifdef USE_RESOURCE_EMBEDDING[\s\S]*?#endif/g, '');
+      // Remove standalone #else and #endif
+      template = template.replace(/#else\s*/g, '');
+      template = template.replace(/#endif\s*/g, '');
+      console.log('📦 Using base64 encoding (resource embedding not available)');
     }
     
     // For raw string literals, we don't need to escape most characters
@@ -577,42 +664,53 @@ class FilePacker {
         .replace(/\t/g, '\\t');
     };
     
-    const archiveResult = escapeCppRawString(archiveBase64 || '');
     const htaHtmlResult = escapeCppRawString(htaHtml || '');
     const escapedAppName = escapeCppString(this.config.appName || 'MyPackage');
     
     console.log('Replacing C++ template placeholders...');
     console.log('Archive size:', archiveSize, 'bytes');
-    console.log('Archive base64 length:', archiveBase64 ? archiveBase64.length : 0);
+    if (!useResource) {
+      const archiveResult = escapeCppRawString(archiveBase64 || '');
+      console.log('Archive base64 length:', archiveBase64 ? archiveBase64.length : 0);
+    }
     console.log('App name:', escapedAppName);
     console.log('HTA HTML length:', htaHtml ? htaHtml.length : 0);
     
     // Replace placeholders
     let cppCode = template;
     
-    // Replace ARCHIVE_BASE64 - need to replace the entire raw string literal, not just the placeholder
-    // Template has: R"RAW({{ARCHIVE_BASE64}})RAW"
-    // We need to replace the whole thing with: R"DELIMITER(content)DELIMITER"
-    // Escape the parentheses and braces in the regex pattern
-    const archivePlaceholderPattern = /R"RAW\([^)]*\{\{ARCHIVE_BASE64\}\}[^)]*\)RAW"/g;
-    if (cppCode.match(archivePlaceholderPattern)) {
-      const archiveReplacement = 'R"' + archiveResult.delimiter + '(' + archiveResult.content + ')' + archiveResult.delimiter + '"';
-      cppCode = cppCode.replace(archivePlaceholderPattern, archiveReplacement);
-    } else {
-      // Fallback: try simpler pattern matching the exact template format
-      const simplePattern = /R"RAW\(\{\{ARCHIVE_BASE64\}\}\)RAW"/g;
-      if (cppCode.match(simplePattern)) {
+    // Replace ARCHIVE_BASE64 (only if not using resources)
+    if (!useResource && archiveBase64) {
+      const archiveResult = escapeCppRawString(archiveBase64);
+      // Replace ARCHIVE_BASE64 - need to replace the entire raw string literal, not just the placeholder
+      // Template has: R"RAW({{ARCHIVE_BASE64}})RAW"
+      const archivePlaceholderPattern = /R"RAW\([^)]*\{\{ARCHIVE_BASE64\}\}[^)]*\)RAW"/g;
+      if (cppCode.match(archivePlaceholderPattern)) {
         const archiveReplacement = 'R"' + archiveResult.delimiter + '(' + archiveResult.content + ')' + archiveResult.delimiter + '"';
-        cppCode = cppCode.replace(simplePattern, archiveReplacement);
+        cppCode = cppCode.replace(archivePlaceholderPattern, archiveReplacement);
       } else {
-        // Last resort: replace just the placeholder (shouldn't happen with correct template)
-        const archivePlaceholder = /\{\{ARCHIVE_BASE64\}\}/g;
-        if (cppCode.match(archivePlaceholder)) {
-          console.warn('⚠️  Warning: Replacing placeholder directly, template may have changed');
-          const archiveReplacement = archiveResult.content;
-          cppCode = cppCode.replace(archivePlaceholder, archiveReplacement);
+        // Fallback: try simpler pattern matching the exact template format
+        const simplePattern = /R"RAW\(\{\{ARCHIVE_BASE64\}\}\)RAW"/g;
+        if (cppCode.match(simplePattern)) {
+          const archiveReplacement = 'R"' + archiveResult.delimiter + '(' + archiveResult.content + ')' + archiveResult.delimiter + '"';
+          cppCode = cppCode.replace(simplePattern, archiveReplacement);
+        } else {
+          // Last resort: replace just the placeholder (shouldn't happen with correct template)
+          const archivePlaceholder = /\{\{ARCHIVE_BASE64\}\}/g;
+          if (cppCode.match(archivePlaceholder)) {
+            console.warn('⚠️  Warning: Replacing placeholder directly, template may have changed');
+            const archiveReplacement = archiveResult.content;
+            cppCode = cppCode.replace(archivePlaceholder, archiveReplacement);
+          }
         }
       }
+    } else if (useResource) {
+      // When using resources, remove the base64 placeholder line entirely
+      // Remove: const char* embeddedArchiveBase64 = R"RAW({{ARCHIVE_BASE64}})RAW";
+      cppCode = cppCode.replace(/const char\* embeddedArchiveBase64 = R"RAW\([^)]*\{\{ARCHIVE_BASE64\}\}[^)]*\)RAW";/g, '');
+      cppCode = cppCode.replace(/const char\* embeddedArchiveBase64 = R"RAW\(\{\{ARCHIVE_BASE64\}\}\)RAW";/g, '');
+      // Also remove any remaining placeholder references
+      cppCode = cppCode.replace(/\{\{ARCHIVE_BASE64\}\}/g, '');
     }
     
     // Replace ARCHIVE_SIZE
@@ -638,11 +736,22 @@ class FilePacker {
     }
     
     // Validate replacements
-    if (cppCode.includes('{{ARCHIVE_BASE64}}') || 
-        cppCode.includes('{{ARCHIVE_SIZE}}') || 
-        cppCode.includes('{{APP_NAME}}') ||
-        cppCode.includes('{{HTA_HTML}}')) {
-      throw new Error('Failed to replace all placeholders in C++ template!');
+    const missingPlaceholders = [];
+    if (!useResource && cppCode.includes('{{ARCHIVE_BASE64}}')) {
+      missingPlaceholders.push('{{ARCHIVE_BASE64}}');
+    }
+    if (cppCode.includes('{{ARCHIVE_SIZE}}')) {
+      missingPlaceholders.push('{{ARCHIVE_SIZE}}');
+    }
+    if (cppCode.includes('{{APP_NAME}}')) {
+      missingPlaceholders.push('{{APP_NAME}}');
+    }
+    if (cppCode.includes('{{HTA_HTML}}')) {
+      missingPlaceholders.push('{{HTA_HTML}}');
+    }
+    
+    if (missingPlaceholders.length > 0) {
+      throw new Error(`Failed to replace placeholders in C++ template: ${missingPlaceholders.join(', ')}`);
     }
     
     console.log('✅ All C++ template placeholders replaced successfully');
@@ -770,9 +879,73 @@ class FilePacker {
     console.log("🔧 Compiling C++ extractor...");
     console.log("🔍 Checking for C++ compiler...");
     
-    // First, check if compiler is available
+    const tempDir = path.dirname(extractorPath);
+    const archivePath = path.join(tempDir, 'files.zip');
+    let resourceFilePath = null;
+    
+    // Check if we should use resource embedding
+    const useResourceEmbedding = this.config.useResourceEmbedding !== false && 
+                                  fs.existsSync(archivePath);
+    
+    // First, check if compiler is available (needed to determine resource compiler type)
     const compiler = new CppCompiler();
     const detectedCompiler = compiler.detectCompiler(this.config.cppCompiler);
+    
+    if (useResourceEmbedding) {
+      // Check for resource compiler
+      const resourceCompiler = new ResourceCompiler();
+      
+      // Determine which resource compiler to use based on C++ compiler
+      const compilerType = detectedCompiler ? detectedCompiler.type : 'auto';
+      const rcInfo = resourceCompiler.detectRC();
+      const windresInfo = resourceCompiler.detectWindres();
+      
+      const hasResourceCompiler = (compilerType === 'mingw' && windresInfo) || 
+                                  (compilerType === 'msvc' && rcInfo) ||
+                                  (compilerType === 'auto' && (windresInfo || rcInfo));
+      
+      if (hasResourceCompiler) {
+        const resourceCompilerName = (compilerType === 'mingw' || (compilerType === 'auto' && windresInfo)) 
+          ? 'windres.exe (MinGW)' 
+          : 'rc.exe (MSVC)';
+        const resourceCompilerPath = (compilerType === 'mingw' || (compilerType === 'auto' && windresInfo))
+          ? windresInfo.path
+          : rcInfo.path;
+        console.log(`✅ Resource Compiler found: ${resourceCompilerName} at ${resourceCompilerPath}`);
+        
+        try {
+          // Generate .rc file
+          console.log('📦 Generating Windows resource file...');
+          const rcFilePath = this.generateResourceFile(archivePath, tempDir);
+          
+          // Compile .rc to .res (MSVC) or .o (MinGW)
+          console.log('🔧 Compiling resource file...');
+          const resourceResult = await resourceCompiler.compileResource(rcFilePath, tempDir, compilerType);
+          resourceFilePath = resourceResult.path;
+          console.log('✅ Resource file compiled:', path.basename(resourceFilePath), `(${resourceResult.type.toUpperCase()} format)`);
+        } catch (rcError) {
+          console.warn('⚠️  Resource compilation failed:', rcError.message);
+          console.warn('   Falling back to base64 encoding...');
+          // Regenerate C++ code without resource embedding
+          const archiveBuffer = fs.readFileSync(archivePath);
+          const archiveBase64 = archiveBuffer.toString('base64');
+          const cppCode = this.generateCPPExtractor(archiveBase64, archiveSize, null, false);
+          fs.writeFileSync(extractorPath, cppCode, 'utf8');
+          resourceFilePath = null; // Clear resource file path
+        }
+      } else {
+        console.warn('⚠️  Resource Compiler not found for', compilerType === 'auto' ? 'detected compiler' : compilerType);
+        console.warn('   For MinGW: windres.exe is required');
+        console.warn('   For MSVC: rc.exe is required (from Windows SDK or Visual Studio)');
+        console.warn('   Falling back to base64 encoding (larger file size).');
+        // Regenerate C++ code without resource embedding
+        const archiveBuffer = fs.readFileSync(archivePath);
+        const archiveBase64 = archiveBuffer.toString('base64');
+        const cppCode = this.generateCPPExtractor(archiveBase64, archiveSize, null, false);
+        fs.writeFileSync(extractorPath, cppCode, 'utf8');
+        resourceFilePath = null; // Clear resource file path
+      }
+    }
     
     console.log('🔍 Compiler detection result:', detectedCompiler ? JSON.stringify(detectedCompiler) : 'Not found');
     
@@ -794,9 +967,7 @@ class FilePacker {
       
       // Fallback to Node.js extractor
       // We need to regenerate the extractor code as Node.js
-      // The archive should be in the temp directory
-      const tempDir = path.dirname(extractorPath);
-      const archivePath = path.join(tempDir, 'files.zip');
+      // The archive should be in the temp directory (already defined above)
       
       if (!fs.existsSync(archivePath)) {
         throw new Error('Archive file not found for fallback. Cannot create installer.');
@@ -842,7 +1013,8 @@ class FilePacker {
     try {
       await compiler.compile(extractorPath, finalOutputPath, {
         preferredCompiler: this.config.cppCompiler,
-        compressWithUPX: this.config.compressWithUPX || false
+        compressWithUPX: this.config.compressWithUPX || false,
+        resourceFile: resourceFilePath
       });
       
       compileSpinner.succeed("✅ C++ extractor compiled successfully");
