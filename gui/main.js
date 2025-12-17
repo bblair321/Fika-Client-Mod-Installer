@@ -161,7 +161,10 @@ ipcMain.handle('create-installer', async (event, options) => {
       version: options.version || '1.0.0',
       includeVersion: options.includeVersion !== false,
       silentMode: options.silentMode || false,
-      defaultExtractPath: options.extractPath || null
+      defaultExtractPath: options.extractPath || null,
+      extractorType: options.extractorType || 'nodejs',
+      cppCompiler: options.cppCompiler || 'auto',
+      compressWithUPX: options.compressWithUPX || false
     });
 
     // Send progress updates

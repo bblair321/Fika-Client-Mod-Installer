@@ -10,6 +10,7 @@ const path = require("path");
 const { execSync } = require("child_process");
 const os = require("os");
 const archiver = require("archiver");
+const CppCompiler = require("./cpp-compiler.js");
 // Make dependencies optional for pkg bundling compatibility
 let AdmZip, cliProgress;
 
@@ -82,6 +83,8 @@ class FilePacker {
       includeVersion: true,
       silentMode: false,
       defaultExtractPath: null,
+      extractorType: "nodejs", // 'nodejs' or 'cpp'
+      cppCompiler: "auto", // 'auto', 'msvc', or 'mingw'
       // Universal installer messages (can be customized)
       messages: {
         title: "File Extractor",
@@ -192,19 +195,28 @@ class FilePacker {
 
     // Create the extractor executable with embedded archive
     const extractorCode = this.generateExtractor(archiveBase64, archiveSize);
-    const extractorPath = path.join(tempDir, "extractor.js");
+    const extractorExtension = this.config.extractorType === 'cpp' ? '.cpp' : '.js';
+    const extractorPath = path.join(tempDir, `extractor${extractorExtension}`);
     
     // Verify the replacement worked before writing
-    if (extractorCode.includes('{{ARCHIVE_BASE64}}')) {
-      console.error('❌ CRITICAL ERROR: Archive placeholder still in extractor code!');
+    if (extractorCode.includes('{{ARCHIVE_BASE64}}') || 
+        extractorCode.includes('{{ARCHIVE_SIZE}}') || 
+        extractorCode.includes('{{APP_NAME}}') ||
+        (this.config.extractorType === 'cpp' && extractorCode.includes('{{HTA_HTML}}'))) {
+      console.error('❌ CRITICAL ERROR: Placeholder still in extractor code!');
       console.error('This means the replacement failed. Cannot create installer.');
-      throw new Error('Archive placeholder replacement failed in extractor code');
+      throw new Error('Placeholder replacement failed in extractor code');
     }
     
     // Verify archive data is actually in the code (check first 50 chars of base64)
     if (archiveBase64 && archiveBase64.length > 0) {
-      const archivePrefix = archiveBase64.substring(0, 50);
-      if (!extractorCode.includes(archivePrefix)) {
+      // For C++, the archive is escaped, so we check for a substring
+      const archivePrefix = archiveBase64.substring(0, Math.min(50, archiveBase64.length));
+      const escapedPrefix = this.config.extractorType === 'cpp' 
+        ? archivePrefix.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+        : archivePrefix;
+      
+      if (!extractorCode.includes(escapedPrefix) && !extractorCode.includes(archivePrefix)) {
         console.error('❌ CRITICAL ERROR: Archive data not found in extractor code!');
         console.error('Archive prefix:', archivePrefix);
         throw new Error('Archive data not embedded in extractor code');
@@ -219,11 +231,18 @@ class FilePacker {
     const extractorCodeStats = fs.statSync(extractorPath);
     const extractorCodeSizeMB = (extractorCodeStats.size / (1024 * 1024)).toFixed(2);
     const extractorCodeSizeKB = (extractorCodeStats.size / 1024).toFixed(0);
-    console.log(`\n📄 Extractor code size: ${extractorCodeSizeMB} MB (${extractorCodeSizeKB} KB)`);
-    console.log(`   - Archive (base64): ~${((archiveBase64.length) / (1024 * 1024)).toFixed(2)} MB`);
-    console.log(`   - Archive (original): ${(archiveSize / (1024 * 1024)).toFixed(2)} MB`);
-    console.log(`   - Base64 overhead: ~${((archiveBase64.length - archiveSize) / (1024 * 1024)).toFixed(2)} MB`);
-    console.log(`   - Extractor template: ~${((extractorCodeStats.size - archiveBase64.length) / (1024 * 1024)).toFixed(2)} MB`);
+    console.log('\n📄 Extractor code size: ' + extractorCodeSizeMB + ' MB (' + extractorCodeSizeKB + ' KB)');
+    
+    const archiveBase64MB = archiveBase64 ? ((archiveBase64.length / (1024 * 1024)).toFixed(2)) : '0.00';
+    const archiveSizeMB = (archiveSize / (1024 * 1024)).toFixed(2);
+    const base64OverheadMB = archiveBase64 ? (((archiveBase64.length - archiveSize) / (1024 * 1024)).toFixed(2)) : '0.00';
+    const templateSize = extractorCodeStats.size - (archiveBase64 ? archiveBase64.length : 0);
+    const templateSizeMB = (templateSize / (1024 * 1024)).toFixed(2);
+    
+    console.log('   - Archive (base64): ~' + archiveBase64MB + ' MB');
+    console.log('   - Archive (original): ' + archiveSizeMB + ' MB');
+    console.log('   - Base64 overhead: ~' + base64OverheadMB + ' MB');
+    console.log('   - Extractor template: ~' + templateSizeMB + ' MB');
     
     console.log('✅ Extractor code written to:', extractorPath);
     
@@ -233,38 +252,45 @@ class FilePacker {
     if (placeholderPos !== -1) {
       console.error('❌ CRITICAL: Placeholder still in written file at position:', placeholderPos);
       console.error('Context around placeholder:', writtenContent.substring(Math.max(0, placeholderPos - 100), placeholderPos + 150));
-      throw new Error('Placeholder replacement did not persist in extractor.js file');
+      throw new Error(`Placeholder replacement did not persist in extractor${extractorExtension} file`);
     }
     if (archiveBase64 && archiveBase64.length > 0) {
-      const archivePrefix = archiveBase64.substring(0, 50);
-      const archivePos = writtenContent.indexOf(archivePrefix);
+      const archivePrefix = archiveBase64.substring(0, Math.min(50, archiveBase64.length));
+      const escapedPrefix = this.config.extractorType === 'cpp' 
+        ? archivePrefix.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+        : archivePrefix;
+      const archivePos = writtenContent.indexOf(escapedPrefix) !== -1 
+        ? writtenContent.indexOf(escapedPrefix)
+        : writtenContent.indexOf(archivePrefix);
       if (archivePos === -1) {
         console.error('❌ CRITICAL: Archive data not found in written file!');
         console.error('Looking for:', archivePrefix);
         console.error('First 200 chars of file:', writtenContent.substring(0, 200));
-        throw new Error('Archive data not found in extractor.js file');
+        throw new Error(`Archive data not found in extractor${extractorExtension} file`);
       } else {
         console.log('✅ Verified: Archive data found in written file at position:', archivePos);
       }
     }
     console.log('✅ Verified: Written file contains replaced archive data');
     
-    // Create package.json in temp directory to ensure console window is shown
-    const packageJsonPath = path.join(tempDir, "package.json");
-    fs.writeFileSync(packageJsonPath, JSON.stringify({
-      name: "installer",
-      version: "1.0.0",
-      main: "extractor.js",
-      bin: "extractor.js",
-      pkg: {
-        scripts: [],
-        assets: [],
-        outputPath: path.resolve(this.config.outputDir, outputName),
-        // Explicitly exclude the template file to prevent pkg from bundling it
-        // Only bundle extractor.js, nothing else
-        targets: ["node18-win-x64"]
-      }
-    }, null, 2));
+    // Create package.json only for Node.js extractor
+    if (this.config.extractorType !== 'cpp') {
+      const packageJsonPath = path.join(tempDir, "package.json");
+      fs.writeFileSync(packageJsonPath, JSON.stringify({
+        name: "installer",
+        version: "1.0.0",
+        main: "extractor.js",
+        bin: "extractor.js",
+        pkg: {
+          scripts: [],
+          assets: [],
+          outputPath: path.resolve(this.config.outputDir, outputName),
+          // Explicitly exclude the template file to prevent pkg from bundling it
+          // Only bundle extractor.js, nothing else
+          targets: ["node18-win-x64"]
+        }
+      }, null, 2));
+    }
     await this.createExtractorExecutable(
       extractorPath,
       outputFileName,
@@ -395,12 +421,235 @@ class FilePacker {
   }
 
   /**
-   * Generate the extractor Node.js code with embedded archive
+   * Extract HTA HTML from the GUI template
+   * The HTML is generated by generateGUIHTML() function using string concatenation
+   */
+  extractHTAHTML() {
+    const templatePath = path.resolve(__dirname, '..', 'installer-gui-template.js');
+    try {
+      const templateFileContent = fs.readFileSync(templatePath, 'utf8');
+      
+      // Find the generateGUIHTML function
+      const funcStart = templateFileContent.indexOf('function generateGUIHTML()');
+      if (funcStart === -1) {
+        throw new Error('Could not find generateGUIHTML function');
+      }
+      
+      // Find the return statement - it starts with "return '"
+      const returnStart = templateFileContent.indexOf("return '", funcStart);
+      if (returnStart === -1) {
+        throw new Error('Could not find return statement');
+      }
+      
+      // The HTML is a long concatenated string with String.fromCharCode(10) for newlines
+      // We need to extract everything from the opening quote to the closing quote + semicolon
+      let htmlStart = returnStart + 8; // After "return '"
+      let htmlEnd = htmlStart;
+      let inString = true;
+      let escapeNext = false;
+      
+      // Find the end of the return statement (closing quote followed by semicolon)
+      for (let i = htmlStart; i < templateFileContent.length; i++) {
+        const char = templateFileContent[i];
+        
+        if (escapeNext) {
+          escapeNext = false;
+          continue;
+        }
+        
+        if (char === '\\') {
+          escapeNext = true;
+          continue;
+        }
+        
+        if (char === "'" && inString) {
+          // Check if this is the end (followed by semicolon or newline)
+          let j = i + 1;
+          while (j < templateFileContent.length && (templateFileContent[j] === ' ' || templateFileContent[j] === '\n' || templateFileContent[j] === '\r')) {
+            j++;
+          }
+          if (j < templateFileContent.length && templateFileContent[j] === ';') {
+            htmlEnd = i;
+            break;
+          }
+        }
+      }
+      
+      if (htmlEnd === htmlStart) {
+        throw new Error('Could not find end of HTML string');
+      }
+      
+      // Extract the HTML string
+      let html = templateFileContent.substring(htmlStart, htmlEnd);
+      
+      // Replace String.fromCharCode(10) with actual newlines
+      html = html.replace(/String\.fromCharCode\(10\)/g, '\n');
+      html = html.replace(/String\.fromCharCode\(92\)/g, '\\');
+      
+      // Unescape the string
+      html = html.replace(/\\'/g, "'");
+      html = html.replace(/\\"/g, '"');
+      html = html.replace(/\\\\/g, '\\');
+      html = html.replace(/\\n/g, '\n');
+      html = html.replace(/\\r/g, '\r');
+      html = html.replace(/\\t/g, '\t');
+      
+      return html;
+    } catch (error) {
+      throw new Error(`Failed to extract HTA HTML: ${error.message}`);
+    }
+  }
+
+  /**
+   * Generate the extractor code with embedded archive
    */
   generateExtractor(archiveBase64, archiveSize) {
-    // Use GUI installer by default
-    return this.generateGUIExtractor(archiveBase64, archiveSize);
+    if (this.config.extractorType === 'cpp') {
+      return this.generateCPPExtractor(archiveBase64, archiveSize);
+    } else {
+      // Use GUI installer by default
+      return this.generateGUIExtractor(archiveBase64, archiveSize);
+    }
   }
+
+  /**
+   * Generate C++ extractor code with embedded archive
+   */
+  generateCPPExtractor(archiveBase64, archiveSize) {
+    // Load C++ template
+    const templatePath = path.resolve(__dirname, '..', 'installer-cpp-template.cpp');
+    let template;
+    
+    try {
+      template = fs.readFileSync(templatePath, 'utf8');
+    } catch (error) {
+      throw new Error(`Failed to load C++ template: ${error.message}. Make sure installer-cpp-template.cpp exists.`);
+    }
+    
+    // Extract HTA HTML
+    let htaHtml;
+    try {
+      htaHtml = this.extractHTAHTML();
+    } catch (error) {
+      throw new Error(`Failed to extract HTA HTML: ${error.message}`);
+    }
+    
+    // For raw string literals, we don't need to escape most characters
+    // But we need to ensure the closing pattern ")delimiter"" doesn't appear in the string
+    // If it does, we'll use a different delimiter
+    const escapeCppRawString = (str, delimiter = 'RAW') => {
+      // Check if the closing pattern ")delimiter"" appears in the string
+      // This is what breaks C++ raw string literal syntax
+      let attempts = 0;
+      let currentDelimiter = delimiter;
+      let closingPattern = ')' + currentDelimiter + '"';
+      
+      while (str.includes(closingPattern) && attempts < 1000) {
+        // Try alternative delimiters
+        attempts++;
+        if (attempts < 100) {
+          currentDelimiter = delimiter + attempts.toString();
+        } else {
+          // Use a more unique delimiter with random suffix
+          currentDelimiter = delimiter + '_' + attempts.toString() + '_' + Math.random().toString(36).substring(2, 8);
+        }
+        closingPattern = ')' + currentDelimiter + '"';
+      }
+      
+      if (attempts >= 1000) {
+        throw new Error('Failed to find a safe delimiter for raw string literal after 1000 attempts. This is extremely unlikely.');
+      }
+      
+      if (attempts > 0) {
+        console.log(`   Using delimiter: ${currentDelimiter} (after ${attempts} attempts)`);
+      }
+      
+      return { content: str, delimiter: currentDelimiter };
+    };
+    
+    // For regular string literals (appName), we still need escaping
+    const escapeCppString = (str) => {
+      return str
+        .replace(/\\/g, '\\\\')
+        .replace(/"/g, '\\"')
+        .replace(/\n/g, '\\n')
+        .replace(/\r/g, '\\r')
+        .replace(/\t/g, '\\t');
+    };
+    
+    const archiveResult = escapeCppRawString(archiveBase64 || '');
+    const htaHtmlResult = escapeCppRawString(htaHtml || '');
+    const escapedAppName = escapeCppString(this.config.appName || 'MyPackage');
+    
+    console.log('Replacing C++ template placeholders...');
+    console.log('Archive size:', archiveSize, 'bytes');
+    console.log('Archive base64 length:', archiveBase64 ? archiveBase64.length : 0);
+    console.log('App name:', escapedAppName);
+    console.log('HTA HTML length:', htaHtml ? htaHtml.length : 0);
+    
+    // Replace placeholders
+    let cppCode = template;
+    
+    // Replace ARCHIVE_BASE64 - need to replace the entire raw string literal, not just the placeholder
+    // Template has: R"RAW({{ARCHIVE_BASE64}})RAW"
+    // We need to replace the whole thing with: R"DELIMITER(content)DELIMITER"
+    // Escape the parentheses and braces in the regex pattern
+    const archivePlaceholderPattern = /R"RAW\([^)]*\{\{ARCHIVE_BASE64\}\}[^)]*\)RAW"/g;
+    if (cppCode.match(archivePlaceholderPattern)) {
+      const archiveReplacement = 'R"' + archiveResult.delimiter + '(' + archiveResult.content + ')' + archiveResult.delimiter + '"';
+      cppCode = cppCode.replace(archivePlaceholderPattern, archiveReplacement);
+    } else {
+      // Fallback: try simpler pattern matching the exact template format
+      const simplePattern = /R"RAW\(\{\{ARCHIVE_BASE64\}\}\)RAW"/g;
+      if (cppCode.match(simplePattern)) {
+        const archiveReplacement = 'R"' + archiveResult.delimiter + '(' + archiveResult.content + ')' + archiveResult.delimiter + '"';
+        cppCode = cppCode.replace(simplePattern, archiveReplacement);
+      } else {
+        // Last resort: replace just the placeholder (shouldn't happen with correct template)
+        const archivePlaceholder = /\{\{ARCHIVE_BASE64\}\}/g;
+        if (cppCode.match(archivePlaceholder)) {
+          console.warn('⚠️  Warning: Replacing placeholder directly, template may have changed');
+          const archiveReplacement = archiveResult.content;
+          cppCode = cppCode.replace(archivePlaceholder, archiveReplacement);
+        }
+      }
+    }
+    
+    // Replace ARCHIVE_SIZE
+    cppCode = cppCode.replace(/\{\{ARCHIVE_SIZE\}\}/g, String(archiveSize));
+    
+    // Replace APP_NAME (regular string literal)
+    cppCode = cppCode.replace(/\{\{APP_NAME\}\}/g, escapedAppName);
+    
+    // Replace HTA_HTML - need to replace the entire raw string literal
+    // Template has: R"RAW({{HTA_HTML}})RAW"
+    const htaPlaceholderPattern = /R"RAW\(\{\{HTA_HTML\}\}\)RAW"/g;
+    if (cppCode.match(htaPlaceholderPattern)) {
+      const htaReplacement = 'R"' + htaHtmlResult.delimiter + '(' + htaHtmlResult.content + ')' + htaHtmlResult.delimiter + '"';
+      cppCode = cppCode.replace(htaPlaceholderPattern, htaReplacement);
+    } else {
+      // Fallback: try to find just the placeholder (shouldn't happen with correct template)
+      const htaPlaceholder = /\{\{HTA_HTML\}\}/g;
+      if (cppCode.match(htaPlaceholder)) {
+        console.warn('⚠️  Warning: Replacing HTA_HTML placeholder directly, template may have changed');
+        const htaReplacement = htaHtmlResult.content;
+        cppCode = cppCode.replace(htaPlaceholder, htaReplacement);
+      }
+    }
+    
+    // Validate replacements
+    if (cppCode.includes('{{ARCHIVE_BASE64}}') || 
+        cppCode.includes('{{ARCHIVE_SIZE}}') || 
+        cppCode.includes('{{APP_NAME}}') ||
+        cppCode.includes('{{HTA_HTML}}')) {
+      throw new Error('Failed to replace all placeholders in C++ template!');
+    }
+    
+    console.log('✅ All C++ template placeholders replaced successfully');
+    
+    return cppCode;
+  }
+
 
   generateGUIExtractor(archiveBase64, archiveSize) {
     // Load the GUI template and substitute values
@@ -514,7 +763,134 @@ class FilePacker {
   /**
    * Create the final executable using pkg
    */
+  /**
+   * Create C++ extractor executable
+   */
+  async createCPPExtractorExecutable(extractorPath, outputName, archiveSize = 0) {
+    console.log("🔧 Compiling C++ extractor...");
+    console.log("🔍 Checking for C++ compiler...");
+    
+    // First, check if compiler is available
+    const compiler = new CppCompiler();
+    const detectedCompiler = compiler.detectCompiler(this.config.cppCompiler);
+    
+    console.log('🔍 Compiler detection result:', detectedCompiler ? JSON.stringify(detectedCompiler) : 'Not found');
+    
+    // Also check PATH for debugging
+    const currentPath = process.env.PATH || '';
+    const hasMingwInPath = currentPath.includes('msys64') || currentPath.includes('mingw');
+    console.log('🔍 PATH contains MinGW:', hasMingwInPath);
+    if (!hasMingwInPath && !detectedCompiler) {
+      console.warn('⚠️  MinGW not found in PATH. Current PATH:', currentPath.substring(0, 200) + '...');
+    }
+    
+    if (!detectedCompiler) {
+      console.warn('\n⚠️  WARNING: No C++ compiler found!');
+      console.warn('   Falling back to Node.js extractor (larger file size).');
+      console.warn('\n   To use C++ extractor (smaller size), install one of:');
+      console.warn('   - Microsoft Visual Studio (with "Desktop development with C++")');
+      console.warn('   - MinGW-w64 (https://www.mingw-w64.org/)');
+      console.warn('\n   Continuing with Node.js extractor...\n');
+      
+      // Fallback to Node.js extractor
+      // We need to regenerate the extractor code as Node.js
+      // The archive should be in the temp directory
+      const tempDir = path.dirname(extractorPath);
+      const archivePath = path.join(tempDir, 'files.zip');
+      
+      if (!fs.existsSync(archivePath)) {
+        throw new Error('Archive file not found for fallback. Cannot create installer.');
+      }
+      
+      // Read archive and regenerate as Node.js extractor
+      const archiveBuffer = fs.readFileSync(archivePath);
+      const archiveBase64 = archiveBuffer.toString('base64');
+      const nodeExtractorCode = this.generateGUIExtractor(archiveBase64, archiveSize);
+      
+      // Write Node.js extractor
+      const jsExtractorPath = path.join(tempDir, 'extractor.js');
+      fs.writeFileSync(jsExtractorPath, nodeExtractorCode);
+      
+      // Temporarily change config and use Node.js path
+      const originalExtractorType = this.config.extractorType;
+      this.config.extractorType = 'nodejs';
+      
+      try {
+        return await this.createExtractorExecutable(jsExtractorPath, outputName, archiveSize);
+      } finally {
+        // Restore original config
+        this.config.extractorType = originalExtractorType;
+      }
+    }
+    
+    const sanitizedOutputName = outputName
+      .replace(/[<>:"/\\|?*]/g, "")
+      .replace(/'/g, "")
+      .replace(/\s+/g, "_")
+      .trim();
+    
+    const outputPath = path.join(this.config.outputDir, sanitizedOutputName);
+    const absoluteOutputPath = path.resolve(process.cwd(), outputPath);
+    
+    // Ensure output has .exe extension
+    const finalOutputPath = absoluteOutputPath.endsWith('.exe') 
+      ? absoluteOutputPath 
+      : absoluteOutputPath + '.exe';
+    
+    const compileSpinner = ora("🔧 Compiling C++ extractor...").start();
+    
+    try {
+      await compiler.compile(extractorPath, finalOutputPath, {
+        preferredCompiler: this.config.cppCompiler,
+        compressWithUPX: this.config.compressWithUPX || false
+      });
+      
+      compileSpinner.succeed("✅ C++ extractor compiled successfully");
+      console.log(`✅ Created native executable: ${path.basename(finalOutputPath)}`);
+      console.log(`📦 Archive embedded: ${(archiveSize / 1024 / 1024).toFixed(2)} MB`);
+      console.log(`💾 Executable size: ${(fs.statSync(finalOutputPath).size / 1024 / 1024).toFixed(2)} MB`);
+    } catch (error) {
+      compileSpinner.fail("❌ C++ compilation failed");
+      console.warn('\n⚠️  C++ compilation failed, falling back to Node.js extractor...');
+      console.warn(`   Error: ${error.message}\n`);
+      
+      // Fallback to Node.js
+      const tempDir = path.dirname(extractorPath);
+      const archivePath = path.join(tempDir, 'files.zip');
+      
+      if (!fs.existsSync(archivePath)) {
+        throw new Error('Archive file not found for fallback. Cannot create installer.');
+      }
+      
+      // Read archive and regenerate as Node.js extractor
+      const archiveBuffer = fs.readFileSync(archivePath);
+      const archiveBase64 = archiveBuffer.toString('base64');
+      const nodeExtractorCode = this.generateGUIExtractor(archiveBase64, archiveSize);
+      
+      // Write Node.js extractor
+      const jsExtractorPath = path.join(tempDir, 'extractor.js');
+      fs.writeFileSync(jsExtractorPath, nodeExtractorCode);
+      
+      // Temporarily change config and use Node.js path
+      const originalExtractorType = this.config.extractorType;
+      this.config.extractorType = 'nodejs';
+      
+      try {
+        return await this.createExtractorExecutable(jsExtractorPath, outputName, archiveSize);
+      } finally {
+        // Restore original config
+        this.config.extractorType = originalExtractorType;
+      }
+    }
+  }
+
   async createExtractorExecutable(extractorPath, outputName, archiveSize = 0) {
+    // Check if C++ extractor is requested
+    if (this.config.extractorType === 'cpp') {
+      return await this.createCPPExtractorExecutable(extractorPath, outputName, archiveSize);
+    }
+    
+    // Default: Node.js extractor
     console.log("📦 Installing required packages...");
 
     // Install required packages with spinner

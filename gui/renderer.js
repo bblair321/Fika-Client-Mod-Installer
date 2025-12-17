@@ -9,6 +9,9 @@ const versionInput = document.getElementById('version');
 const outputDirInput = document.getElementById('outputDir');
 const browseOutputBtn = document.getElementById('browseOutputBtn');
 const includeVersionCheckbox = document.getElementById('includeVersion');
+const useCppExtractorCheckbox = document.getElementById('useCppExtractor');
+const compressWithUPXCheckbox = document.getElementById('compressWithUPX');
+const upxCompressLabel = document.getElementById('upxCompressLabel');
 const createBtn = document.getElementById('createBtn');
 const progressContainer = document.getElementById('progressContainer');
 const progressFill = document.getElementById('progressFill');
@@ -55,6 +58,18 @@ function updateCreateButton() {
   createBtn.disabled = !selectedFolder || !appNameInput.value.trim();
 }
 
+// Show/hide UPX compression option based on C++ extractor selection
+if (useCppExtractorCheckbox) {
+  useCppExtractorCheckbox.addEventListener('change', () => {
+    if (upxCompressLabel) {
+      upxCompressLabel.style.display = useCppExtractorCheckbox.checked ? 'block' : 'none';
+      if (!useCppExtractorCheckbox.checked && compressWithUPXCheckbox) {
+        compressWithUPXCheckbox.checked = false;
+      }
+    }
+  });
+}
+
 // Listen to input changes
 folderPathInput.addEventListener('input', updateCreateButton);
 appNameInput.addEventListener('input', updateCreateButton);
@@ -92,7 +107,10 @@ createBtn.addEventListener('click', async () => {
       outputName: outputNameInput.value.trim() || appNameInput.value.trim() || 'MyPackage',
       version: versionInput.value.trim() || '1.0.0',
       outputDir: outputDirectory,
-      includeVersion: includeVersionCheckbox.checked
+      includeVersion: includeVersionCheckbox.checked,
+      extractorType: useCppExtractorCheckbox && useCppExtractorCheckbox.checked ? 'cpp' : 'nodejs',
+      cppCompiler: 'auto',
+      compressWithUPX: compressWithUPXCheckbox && compressWithUPXCheckbox.checked
     };
 
     // Update progress
