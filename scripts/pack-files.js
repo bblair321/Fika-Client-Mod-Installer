@@ -1453,51 +1453,14 @@ class FilePacker {
     }
 
     if (!detectedCompiler) {
-      console.warn("\n⚠️  WARNING: No C++ compiler found!");
-      console.warn("   Falling back to Node.js extractor (larger file size).");
-      console.warn("\n   To use C++ extractor (smaller size), install one of:");
-      console.warn(
-        '   - Microsoft Visual Studio (with "Desktop development with C++")'
+      throw new Error(
+        "❌ No C++ compiler found!\n\n" +
+          "C++ extractor is required. Please install one of:\n" +
+          '  - Microsoft Visual Studio (with "Desktop development with C++")\n' +
+          "  - MinGW-w64 (https://www.mingw-w64.org/)\n\n" +
+          "Or ensure cl.exe (MSVC) or g++.exe (MinGW) is in your PATH.\n\n" +
+          'If you want to use Node.js extractor instead, set extractorType to "nodejs" in your config.'
       );
-      console.warn("   - MinGW-w64 (https://www.mingw-w64.org/)");
-      console.warn("\n   Continuing with Node.js extractor...\n");
-
-      // Fallback to Node.js extractor
-      // We need to regenerate the extractor code as Node.js
-      // The archive should be in the temp directory (already defined above)
-
-      if (!fs.existsSync(archivePath)) {
-        throw new Error(
-          "Archive file not found for fallback. Cannot create installer."
-        );
-      }
-
-      // Read archive and regenerate as Node.js extractor
-      const archiveBuffer = fs.readFileSync(archivePath);
-      const archiveBase64 = archiveBuffer.toString("base64");
-      const nodeExtractorCode = this.generateGUIExtractor(
-        archiveBase64,
-        archiveSize
-      );
-
-      // Write Node.js extractor
-      const jsExtractorPath = path.join(tempDir, "extractor.js");
-      fs.writeFileSync(jsExtractorPath, nodeExtractorCode);
-
-      // Temporarily change config and use Node.js path
-      const originalExtractorType = this.config.extractorType;
-      this.config.extractorType = "nodejs";
-
-      try {
-        return await this.createExtractorExecutable(
-          jsExtractorPath,
-          outputName,
-          archiveSize
-        );
-      } finally {
-        // Restore original config
-        this.config.extractorType = originalExtractorType;
-      }
     }
 
     const sanitizedOutputName = outputName
@@ -1516,27 +1479,70 @@ class FilePacker {
 
     // Check if output file exists and try to delete it if locked
     if (fs.existsSync(finalOutputPath)) {
-      try {
-        fs.unlinkSync(finalOutputPath);
-        console.log("🗑️  Removed existing output file");
-      } catch (deleteError) {
-        const isPermissionError =
-          deleteError.message.includes("Permission denied") ||
-          deleteError.message.includes("EBUSY") ||
-          deleteError.message.includes("EACCES") ||
-          deleteError.code === "EBUSY" ||
-          deleteError.code === "EACCES";
+      let deleted = false;
+      let lastError = null;
 
-        if (isPermissionError) {
-          throw new Error(
-            `Cannot overwrite ${path.basename(
-              finalOutputPath
-            )}: File is locked.\n` +
-              `Please close any running instances of this file or other programs using it,\n` +
-              `then try again.`
+      // Try multiple times with delays (file might be locked by antivirus or file explorer)
+      for (let attempt = 0; attempt < 5; attempt++) {
+        try {
+          if (attempt > 0) {
+            // Wait a bit before retrying
+            await new Promise((resolve) => setTimeout(resolve, 500));
+          }
+          fs.unlinkSync(finalOutputPath);
+          console.log("🗑️  Removed existing output file");
+          deleted = true;
+          break;
+        } catch (deleteError) {
+          lastError = deleteError;
+          const isPermissionError =
+            deleteError.message.includes("Permission denied") ||
+            deleteError.message.includes("operation not permitted") ||
+            deleteError.message.includes("EPERM") ||
+            deleteError.message.includes("EBUSY") ||
+            deleteError.message.includes("EACCES") ||
+            deleteError.code === "EPERM" ||
+            deleteError.code === "EBUSY" ||
+            deleteError.code === "EACCES";
+
+          if (isPermissionError && attempt === 4) {
+            // Last attempt failed - throw error
+            throw new Error(
+              `Cannot overwrite ${path.basename(
+                finalOutputPath
+              )}: File is locked after 5 attempts.\n\n` +
+                `Please:\n` +
+                `  1. Close any running instances of ${path.basename(
+                  finalOutputPath
+                )}\n` +
+                `  2. Close File Explorer windows showing this file\n` +
+                `  3. Temporarily disable antivirus if it's scanning this file\n` +
+                `  4. Wait a few seconds and try again\n\n` +
+                `The file is currently in use and cannot be replaced.`
+            );
+          }
+          // If it's not a permission error on last attempt, continue - compilation might still work
+          if (!isPermissionError) break;
+        }
+      }
+
+      // If deletion failed but it's not a permission error, warn but continue
+      if (!deleted && lastError) {
+        const isPermissionError =
+          lastError.message.includes("Permission denied") ||
+          lastError.message.includes("EBUSY") ||
+          lastError.message.includes("EACCES") ||
+          lastError.code === "EBUSY" ||
+          lastError.code === "EACCES";
+
+        if (!isPermissionError) {
+          console.warn(
+            `⚠️  Warning: Could not delete existing file: ${lastError.message}`
+          );
+          console.warn(
+            "   Continuing anyway - compilation may fail if file is locked..."
           );
         }
-        // If it's not a permission error, continue - compilation might still work
       }
     }
 
@@ -1589,47 +1595,16 @@ class FilePacker {
         );
       }
 
-      console.warn(
-        "\n⚠️  C++ compilation failed, falling back to Node.js extractor..."
+      // No fallback - C++ compilation is required
+      throw new Error(
+        `❌ C++ compilation failed: ${error.message}\n\n` +
+          "C++ extractor compilation is required. Please fix the compilation error and try again.\n\n" +
+          "Common issues:\n" +
+          "  - Missing compiler dependencies\n" +
+          "  - Incorrect compiler configuration\n" +
+          "  - Resource file compilation errors\n\n" +
+          'If you want to use Node.js extractor instead, set extractorType to "nodejs" in your config.'
       );
-      console.warn(`   Error: ${error.message}\n`);
-
-      // Fallback to Node.js
-      const tempDir = path.dirname(extractorPath);
-      const archivePath = path.join(tempDir, "files.zip");
-
-      if (!fs.existsSync(archivePath)) {
-        throw new Error(
-          "Archive file not found for fallback. Cannot create installer."
-        );
-      }
-
-      // Read archive and regenerate as Node.js extractor
-      const archiveBuffer = fs.readFileSync(archivePath);
-      const archiveBase64 = archiveBuffer.toString("base64");
-      const nodeExtractorCode = this.generateGUIExtractor(
-        archiveBase64,
-        archiveSize
-      );
-
-      // Write Node.js extractor
-      const jsExtractorPath = path.join(tempDir, "extractor.js");
-      fs.writeFileSync(jsExtractorPath, nodeExtractorCode);
-
-      // Temporarily change config and use Node.js path
-      const originalExtractorType = this.config.extractorType;
-      this.config.extractorType = "nodejs";
-
-      try {
-        return await this.createExtractorExecutable(
-          jsExtractorPath,
-          outputName,
-          archiveSize
-        );
-      } finally {
-        // Restore original config
-        this.config.extractorType = originalExtractorType;
-      }
     }
   }
 

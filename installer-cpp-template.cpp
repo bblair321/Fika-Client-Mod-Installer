@@ -55,16 +55,28 @@ std::string getCommFile() {
 #ifdef USE_RESOURCE_EMBEDDING
 std::vector<unsigned char> loadArchiveFromResource() {
     HRSRC hResource = FindResourceA(NULL, MAKEINTRESOURCEA(101), RT_RCDATA);
-    if (!hResource) return {};
+    if (!hResource) {
+        // Resource not found - this means the resource wasn't linked during compilation
+        return {};
+    }
 
     HGLOBAL hMemory = LoadResource(NULL, hResource);
-    if (!hMemory) return {};
+    if (!hMemory) {
+        // Failed to load resource into memory
+        return {};
+    }
 
     DWORD size = SizeofResource(NULL, hResource);
-    if (size == 0) return {};
+    if (size == 0) {
+        // Resource has zero size - resource file may be empty or not properly embedded
+        return {};
+    }
 
     LPVOID data = LockResource(hMemory);
-    if (!data) return {};
+    if (!data) {
+        // Failed to lock resource data
+        return {};
+    }
 
     std::vector<unsigned char> result(size);
     memcpy(result.data(), data, size);
@@ -145,8 +157,16 @@ bool extractZip(const std::string& zipPath, const std::string& destPath) {
     delete[] cmdLine;
 
     if (success) {
-        WaitForSingleObject(pi.hProcess, 60000);
+        // Wait up to 10 minutes for large archives (600000ms = 10 minutes)
+        DWORD waitResult = WaitForSingleObject(pi.hProcess, 600000);
         DWORD exitCode;
+        if (waitResult == WAIT_TIMEOUT) {
+            // Process timed out - terminate it
+            TerminateProcess(pi.hProcess, 1);
+            CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
+            return false;
+        }
         GetExitCodeProcess(pi.hProcess, &exitCode);
         CloseHandle(pi.hProcess);
         CloseHandle(pi.hThread);
@@ -158,39 +178,64 @@ bool extractZip(const std::string& zipPath, const std::string& destPath) {
 // ---------------------
 // Main extraction routine
 // ---------------------
-bool extractFiles(const std::string& extractDir) {
+std::string extractFiles(const std::string& extractDir) {
     try {
         CreateDirectoryA(extractDir.c_str(), NULL);
 
         std::vector<unsigned char> archiveData;
 #ifdef USE_RESOURCE_EMBEDDING
         archiveData = loadArchiveFromResource();
+        if (archiveData.empty()) {
+            return "Resource not found or empty. Resource ID 101 may not be embedded. Archive size: 0 bytes.";
+        }
+        // Verify resource size matches expected size
+        if (archiveData.size() != embeddedArchiveSize) {
+            return "Resource size mismatch. Expected: " + std::to_string(embeddedArchiveSize) + 
+                   " bytes, got: " + std::to_string(archiveData.size()) + " bytes.";
+        }
 #else
+        if (!embeddedArchiveBase64 || strlen(embeddedArchiveBase64) == 0) {
+            return "Archive data is empty (base64 string is null or empty).";
+        }
         archiveData = base64Decode(embeddedArchiveBase64);
+        if (archiveData.empty()) {
+            return "Failed to decode base64 archive data.";
+        }
 #endif
 
-        if (archiveData.empty()) return false;
+        if (archiveData.empty()) {
+            return "Archive data is empty after loading.";
+        }
 
         std::string format(archiveFormat);
         std::string extension = (format == "7z") ? ".7z" : ".zip";
 
         char tempPath[MAX_PATH];
-        if (GetTempPathA(MAX_PATH, tempPath) == 0) return false;
+        if (GetTempPathA(MAX_PATH, tempPath) == 0) {
+            return "Failed to get temporary directory path.";
+        }
 
         std::string tempArchive = tempPath;
         if (tempArchive.back() != '\\') tempArchive += "\\";
         tempArchive += "extract-" + std::to_string(GetTickCount()) + extension;
 
         std::ofstream archiveFile(tempArchive, std::ios::binary);
-        if (!archiveFile.is_open()) return false;
+        if (!archiveFile.is_open()) {
+            return "Failed to create temporary archive file: " + tempArchive;
+        }
         archiveFile.write(reinterpret_cast<const char*>(archiveData.data()), archiveData.size());
         archiveFile.close();
 
         bool success = (format == "7z") ? extractZip(tempArchive, extractDir) : extractZip(tempArchive, extractDir);
         DeleteFileA(tempArchive.c_str());
-        return success;
+        if (!success) {
+            return "PowerShell extraction failed. Check if Expand-Archive is available.";
+        }
+        return "SUCCESS";
+    } catch (const std::exception& e) {
+        return std::string("Exception: ") + e.what();
     } catch (...) {
-        return false;
+        return "Unknown error during extraction.";
     }
 }
 
@@ -246,11 +291,22 @@ int main() {
 
         std::string content = readStringFromFile(commFile);
         if (content.find("EXTRACT|") == 0) {
-            size_t pipePos = content.find('|', 8);
-            if (pipePos != std::string::npos) {
-                std::string extractPath = content.substr(8, pipePos - 8);
-                bool success = extractFiles(extractPath);
-                std::string result = "COMPLETE|" + extractPath + "|" + (success ? "SUCCESS" : "FAIL|Extraction failed");
+            // Extract path - it's everything after "EXTRACT|" (position 8)
+            // Remove any trailing whitespace/newlines
+            std::string extractPath = content.substr(8);
+            // Trim whitespace
+            while (!extractPath.empty() && (extractPath.back() == '\r' || extractPath.back() == '\n' || extractPath.back() == ' ' || extractPath.back() == '\t')) {
+                extractPath.pop_back();
+            }
+            
+            if (!extractPath.empty()) {
+                std::string extractResult = extractFiles(extractPath);
+                std::string result;
+                if (extractResult == "SUCCESS") {
+                    result = "COMPLETE|" + extractPath + "|SUCCESS";
+                } else {
+                    result = "COMPLETE|" + extractPath + "|FAIL|" + extractResult;
+                }
                 writeStringToFile(commFile, result);
             }
         } else if (content == "CLOSE") {
