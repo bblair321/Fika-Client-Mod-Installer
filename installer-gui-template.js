@@ -298,6 +298,33 @@ async function extractFiles(extractDir) {
 
 // Generate HTML for GUI window using mshta.exe
 function generateGUIHTML() {
+  // Local helper function to format bytes
+  function formatBytes(bytes) {
+    // Safety check for undefined, null, or invalid values
+    if (!bytes || bytes === 0 || isNaN(bytes)) return '0 Bytes';
+    if (bytes < 0) bytes = 0;
+    const k = 1024;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  }
+  
+  // HTA-safe HTML escaping (no regex to avoid corruption)
+  function escapeHtml(value) {
+    let s = String(value);
+    s = s.split('&').join('&amp;');
+    s = s.split('<').join('&lt;');
+    s = s.split('>').join('&gt;');
+    s = s.split('"').join('&quot;');
+    s = s.split("'").join('&#39;');
+    return s;
+  }
+  
+  // Calculate formatted size before generating HTML
+  // Use a safe fallback if embeddedArchiveSize is undefined
+  const archiveSize = (typeof embeddedArchiveSize !== 'undefined' && embeddedArchiveSize != null) ? embeddedArchiveSize : 0;
+  const formattedSize = formatBytes(archiveSize);
+  
   return '<!DOCTYPE html>' + String.fromCharCode(10) +
 '<html>' + String.fromCharCode(10) +
 '<head>' + String.fromCharCode(10) +
@@ -356,19 +383,41 @@ function generateGUIHTML() {
 '</head>' + String.fromCharCode(10) +
 '<body style="background: #6B73D9; margin: 0; padding: 0; width: 900px; height: 700px;">' + String.fromCharCode(10) +
 '<div class="container" style="background: #6B73D9 !important; width: 900px !important; height: 700px !important; margin: 0 !important; padding: 0 !important; position: absolute !important; top: 0 !important; left: 0 !important; -webkit-border-radius: 16px !important; -moz-border-radius: 16px !important; -ms-border-radius: 16px !important; border-radius: 16px !important;">' + String.fromCharCode(10) +
-'<div class="header"><h1>' + (appName || "Package").replace(/</g, "&lt;").replace(/>/g, "&gt;") + '</h1><p class="subtitle">Installation Wizard</p></div>' + String.fromCharCode(10) +
+'<div class="header"><h1>' + escapeHtml(appName || "Package") + '</h1><p class="subtitle">Installation Wizard</p></div>' + String.fromCharCode(10) +
 '<div class="content">' + String.fromCharCode(10) +
 '<div class="step-indicator"><div class="step-dot active" id="dot0"></div><div class="step-dot" id="dot1"></div><div class="step-dot" id="dot2"></div><div class="step-dot" id="dot3"></div></div>' + String.fromCharCode(10) +
-'<div id="welcome-step" class="step active"><h2>Welcome</h2><p>Thank you for choosing ' + (appName || "this package").replace(/</g, "&lt;").replace(/>/g, "&gt;") + '. This wizard will guide you through the installation process.</p><div class="info-box" style="-webkit-border-radius: 12px; -moz-border-radius: 12px; -ms-border-radius: 12px; border-radius: 12px;"><strong>Application:</strong> ' + (appName || "Package").replace(/</g, "&lt;").replace(/>/g, "&gt;") + '<br><strong>Package Size:</strong> <span id="packageSize">' + formatBytes(embeddedArchiveSize) + '</span></div><div style="text-align: center; margin-top: 30px;"><button class="btn btn-primary" id="welcomeNextBtn" onclick="nextStep()" style="cursor: pointer; opacity: 1; min-width: 150px; -webkit-border-radius: 20px; -moz-border-radius: 20px; -ms-border-radius: 20px; border-radius: 20px;">Continue</button></div></div>' + String.fromCharCode(10) +
+'<div id="welcome-step" class="step active"><h2>Welcome</h2><p>Thank you for choosing ' + escapeHtml(appName || "this package") + '. This wizard will guide you through the installation process.</p><div class="info-box" style="-webkit-border-radius: 12px; -moz-border-radius: 12px; -ms-border-radius: 12px; border-radius: 12px;"><strong>Application:</strong> ' + escapeHtml(appName || "Package") + '<br><strong>Package Size:</strong> <span id="packageSize">' + formattedSize + '</span></div><div style="text-align: center; margin-top: 30px;"><button class="btn btn-primary" id="welcomeNextBtn" onclick="nextStep()" style="cursor: pointer; opacity: 1; min-width: 150px; -webkit-border-radius: 20px; -moz-border-radius: 20px; -ms-border-radius: 20px; border-radius: 20px;">Continue</button></div></div>' + String.fromCharCode(10) +
 '<div id="directory-step" class="step"><h2>Choose Installation Location</h2><p>Please select the destination folder where you would like to install the files.</p><div class="input-group"><input type="text" id="installPath" class="path-input" placeholder="Click Browse to select a folder..." readonly style="-webkit-border-radius: 12px; -moz-border-radius: 12px; -ms-border-radius: 12px; border-radius: 12px;"><button class="btn btn-primary" id="browseBtn" onclick="selectFolder()" style="-webkit-border-radius: 20px; -moz-border-radius: 20px; -ms-border-radius: 20px; border-radius: 20px;">Browse</button></div><div class="button-group"><button class="btn btn-secondary" id="dirBackBtn" onclick="prevStep()" style="-webkit-border-radius: 20px; -moz-border-radius: 20px; -ms-border-radius: 20px; border-radius: 20px;">Back</button><button class="btn btn-primary" id="nextBtn" onclick="nextStep()" disabled style="-webkit-border-radius: 20px; -moz-border-radius: 20px; -ms-border-radius: 20px; border-radius: 20px;">Install</button></div></div>' + String.fromCharCode(10) +
 '<div id="installing-step" class="step"><h2>Installing</h2><p style="margin-bottom: 20px;">Please wait while the files are being extracted.</p><div class="progress-container"><div class="progress-bar"><div id="progressFill" class="progress-fill"></div></div><p id="progressText" class="progress-text">Initializing...</p></div><p style="text-align: center; color: #666; margin-top: 16px; font-size: 0.9em; font-style: italic;">This may take a few moments depending on file size.</p></div>' + String.fromCharCode(10) +
 '<div id="complete-step" class="step"><h2>Installation Complete</h2><div class="success-icon">✓</div><p style="text-align: center; margin-bottom: 20px; font-size: 1em; color: #333;">All files have been successfully installed to:</p><p class="install-path" id="finalPath" style="-webkit-border-radius: 12px; -moz-border-radius: 12px; -ms-border-radius: 12px; border-radius: 12px;"></p><div class="button-group" style="justify-content: center; margin-top: 30px;"><button class="btn btn-success" onclick="openFolder()" style="-webkit-border-radius: 20px; -moz-border-radius: 20px; -ms-border-radius: 20px; border-radius: 20px;">Open Folder</button><button class="btn btn-primary" onclick="closeInstaller()" style="-webkit-border-radius: 20px; -moz-border-radius: 20px; -ms-border-radius: 20px; border-radius: 20px;">Finish</button></div></div>' + String.fromCharCode(10) +
 '<div id="error-step" class="step"><h2>Installation Failed</h2><div class="error-icon">✗</div><p id="errorMessage" style="text-align: center; color: #721c24; font-weight: 400; margin: 20px 0; padding: 15px; background: #f8d7da; -webkit-border-radius: 12px; -moz-border-radius: 12px; -ms-border-radius: 12px; border-radius: 12px; border: 1px solid #f5c6cb; font-size: 0.9em;"></p><div style="text-align: center; margin-top: 30px;"><button class="btn btn-primary" onclick="showStep(1)" style="-webkit-border-radius: 20px; -moz-border-radius: 20px; -ms-border-radius: 20px; border-radius: 20px;">Try Again</button></div></div>' + String.fromCharCode(10) +
 '</div></div></div>' + String.fromCharCode(10) +
 '<script>' + String.fromCharCode(10) +
-'window.onerror = function(msg, url, line) {' + String.fromCharCode(10) +
-'  return true;' + String.fromCharCode(10) +
-'};' + String.fromCharCode(10) +
+'(function () {' + String.fromCharCode(10) +
+'  function log(msg) {' + String.fromCharCode(10) +
+'    try {' + String.fromCharCode(10) +
+'      var fso = new ActiveXObject("Scripting.FileSystemObject");' + String.fromCharCode(10) +
+'      var shell = new ActiveXObject("WScript.Shell");' + String.fromCharCode(10) +
+'      var temp = shell.ExpandEnvironmentStrings("%TEMP%");' + String.fromCharCode(10) +
+'      var path = temp + "\\\\installer-debug.txt";' + String.fromCharCode(10) +
+'      var file;' + String.fromCharCode(10) +
+'      if (fso.FileExists(path)) {' + String.fromCharCode(10) +
+'        file = fso.OpenTextFile(path, 8);' + String.fromCharCode(10) +
+'      } else {' + String.fromCharCode(10) +
+'        file = fso.CreateTextFile(path, true);' + String.fromCharCode(10) +
+'      }' + String.fromCharCode(10) +
+'      file.WriteLine(new Date().toISOString() + " | " + msg);' + String.fromCharCode(10) +
+'      file.Close();' + String.fromCharCode(10) +
+'    } catch (e) {' + String.fromCharCode(10) +
+'    }' + String.fromCharCode(10) +
+'  }' + String.fromCharCode(10) +
+'  window.__log = log;' + String.fromCharCode(10) +
+'  window.onerror = function (msg, url, line) {' + String.fromCharCode(10) +
+'    log("JS ERROR: " + msg + " @ line " + line);' + String.fromCharCode(10) +
+'    return false;' + String.fromCharCode(10) +
+'  };' + String.fromCharCode(10) +
+'  log("HTA script started");' + String.fromCharCode(10) +
+'})();' + String.fromCharCode(10) +
 '// Immediately resize window on load to prevent auto-sizing' + String.fromCharCode(10) +
 '(function() {' + String.fromCharCode(10) +
 '  try {' + String.fromCharCode(10) +
@@ -391,10 +440,36 @@ function generateGUIHTML() {
 '    if (container) container.style.background = "#6B73D9";' + String.fromCharCode(10) +
 '  } catch (e) {}' + String.fromCharCode(10) +
 '};' + String.fromCharCode(10) +
+'function escapeHtml(value) {' + String.fromCharCode(10) +
+'  var s = String(value);' + String.fromCharCode(10) +
+'  s = s.split("&").join("&amp;");' + String.fromCharCode(10) +
+'  s = s.split("<").join("&lt;");' + String.fromCharCode(10) +
+'  s = s.split(">").join("&gt;");' + String.fromCharCode(10) +
+'  s = s.split(\'"\').join("&quot;");' + String.fromCharCode(10) +
+'  s = s.split("\'").join("&#39;");' + String.fromCharCode(10) +
+'  return s;' + String.fromCharCode(10) +
+'}' + String.fromCharCode(10) +
+'function el(tag, className, text) {' + String.fromCharCode(10) +
+'  var e = document.createElement(tag);' + String.fromCharCode(10) +
+'  if (className) e.className = className;' + String.fromCharCode(10) +
+'  if (text !== undefined) e.innerText = text;' + String.fromCharCode(10) +
+'  return e;' + String.fromCharCode(10) +
+'}' + String.fromCharCode(10) +
+'function clear(node) {' + String.fromCharCode(10) +
+'  while (node.firstChild) node.removeChild(node.firstChild);' + String.fromCharCode(10) +
+'}' + String.fromCharCode(10) +
+'function showError(message) {' + String.fromCharCode(10) +
+'  __log("UI ERROR: " + message);' + String.fromCharCode(10) +
+'  var box = document.getElementById("errorMessage");' + String.fromCharCode(10) +
+'  if (box) {' + String.fromCharCode(10) +
+'    box.innerText = message;' + String.fromCharCode(10) +
+'    box.style.display = "block";' + String.fromCharCode(10) +
+'  }' + String.fromCharCode(10) +
+'}' + String.fromCharCode(10) +
 'var currentStep = 0;' + String.fromCharCode(10) +
 'var selectedPath = null;' + String.fromCharCode(10) +
 'var finalExtractionPath = null;' + String.fromCharCode(10) +
-'var archiveSize = ' + embeddedArchiveSize + ';' + String.fromCharCode(10) +
+'var archiveSize = parseInt("{{ARCHIVE_SIZE}}", 10) || 0;' + String.fromCharCode(10) +
 'var commFile = (function() {' + String.fromCharCode(10) +
 '  try {' + String.fromCharCode(10) +
 '    var fso = new ActiveXObject("Scripting.FileSystemObject");' + String.fromCharCode(10) +
