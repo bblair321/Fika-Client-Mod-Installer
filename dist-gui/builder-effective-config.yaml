@@ -1,13 +1,16 @@
 directories:
   output: dist-gui
   buildResources: build
-appId: com.exe-packager.gui
-productName: EXE Packager
+appId: com.onefile.installer
+productName: OneFile Installer
 files:
   - filter:
       - gui/**/*
       - scripts/**/*
+      - installer-gui-template.hta
       - installer-gui-template.js
+      - installer-cpp-template.cpp
+      - installer-resource-template.rc
       - configs/**/*
       - package.json
       - '!node_modules/**/{CHANGELOG.md,README.md,README,readme.md,readme}'
