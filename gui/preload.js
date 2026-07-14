@@ -1,13 +1,17 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
-// Expose protected methods that allow the renderer process
-// to use ipcRenderer without exposing the entire object
-
 contextBridge.exposeInMainWorld('electronAPI', {
-  selectFolder: () => ipcRenderer.invoke('select-folder'),
+  selectFolders: () => ipcRenderer.invoke('select-folders'),
   selectOutputFolder: () => ipcRenderer.invoke('select-output-folder'),
+  selectInstallPath: () => ipcRenderer.invoke('select-install-path'),
+  selectIconFile: () => ipcRenderer.invoke('select-icon-file'),
   createInstaller: (options) => ipcRenderer.invoke('create-installer', options),
   openFolder: (folderPath) => ipcRenderer.invoke('open-folder', folderPath),
+  getSuggestedPaths: () => ipcRenderer.invoke('get-suggested-paths'),
+  saveConfig: (config) => ipcRenderer.invoke('save-config', config),
+  loadConfig: () => ipcRenderer.invoke('load-config'),
+  saveLastConfig: (config) => ipcRenderer.invoke('save-last-config', config),
+  loadLastConfig: () => ipcRenderer.invoke('load-last-config'),
   windowMinimize: () => ipcRenderer.invoke('window-minimize'),
   windowMaximize: () => ipcRenderer.invoke('window-maximize'),
   windowClose: () => ipcRenderer.invoke('window-close'),
@@ -17,6 +21,5 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   removeProgressListener: () => {
     ipcRenderer.removeAllListeners('packaging-progress');
-  }
+  },
 });
-

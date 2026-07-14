@@ -1,12 +1,12 @@
 {
   "name": "exe-packager",
-  "version": "1.0.0",
-  "description": "Universal toolkit for creating executables and self-extracting archives",
+  "version": "1.2.0",
+  "description": "Create single-file Windows installers from folders — for mods, games, and file distributions",
   "main": "gui/main.js",
   "scripts": {
-    "test": "echo \"No tests specified\" && exit 0",
+    "test": "node test/run-all.js",
+    "test:fast": "node test/run-all.js --fast",
     "install-tools": "npm install -g pkg electron-builder",
-    "example:node": "node scripts/package-exe.js node --help",
     "example:files": "node scripts/pack-files.js --help",
     "gui": "electron gui/main.js",
     "gui:dev": "NODE_ENV=development electron gui/main.js",
@@ -15,13 +15,13 @@
     "dev:reset-all": "node scripts/clean-dist.js"
   },
   "keywords": [
-    "executable",
-    "packaging",
-    "pkg",
-    "electron",
-    "pyinstaller",
+    "installer",
     "self-extracting",
-    "installer"
+    "sfx",
+    "mod",
+    "windows",
+    "electron",
+    "packaging"
   ],
   "author": "bblair321",
   "license": "MIT",
@@ -40,22 +40,24 @@
     "pkg": "^5.8.1"
   },
   "bin": {
-    "exe-pack": "scripts/package-exe.js",
     "file-pack": "scripts/pack-files.js"
   },
   "engines": {
     "node": ">=18.0.0"
   },
   "build": {
-    "appId": "com.exe-packager.gui",
-    "productName": "EXE Packager",
+    "appId": "com.onefile.installer",
+    "productName": "OneFile Installer",
     "directories": {
       "output": "dist-gui"
     },
     "files": [
       "gui/**/*",
       "scripts/**/*",
+      "installer-gui-template.hta",
       "installer-gui-template.js",
+      "installer-cpp-template.cpp",
+      "installer-resource-template.rc",
       "configs/**/*",
       "package.json",
       "!node_modules/**/{CHANGELOG.md,README.md,README,readme.md,readme}",
@@ -70,8 +72,9 @@
     ],
     "win": {
       "target": "portable",
+      "icon": "build/icon.png",
       "requestedExecutionLevel": "asInvoker",
-      "signAndEditExecutable": false
+      "signAndEditExecutable": true
     },
     "nsis": {
       "oneClick": false,

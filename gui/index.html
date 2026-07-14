@@ -3,89 +3,91 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>EXE Packager - Universal Installer Creator</title>
+    <title>OneFile Installer</title>
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
     <div class="container">
-        <!-- Header -->
         <header class="header">
             <div class="window-controls">
                 <button id="minimizeBtn" class="window-btn" title="Minimize">−</button>
                 <button id="maximizeBtn" class="window-btn" title="Maximize">□</button>
                 <button id="closeBtn" class="window-btn close-btn" title="Close">×</button>
             </div>
-            <h1>📦 EXE Packager</h1>
-            <p class="subtitle">Universal Single-File Installer Creator</p>
+            <div class="brand">
+                <p class="brand-mark">OneFile Installer</p>
+                <p class="subtitle">Turn folders into a single Windows installer</p>
+            </div>
+            <div class="header-actions">
+                <button id="loadConfigBtn" class="btn btn-ghost" type="button">Load profile</button>
+                <button id="saveConfigBtn" class="btn btn-ghost" type="button">Save profile</button>
+            </div>
         </header>
 
-        <!-- Main Content -->
         <main class="main-content">
-            <!-- Step 1: Select Folder -->
             <section class="section">
-                <h2>Step 1: Select Folder to Package</h2>
+                <h2>1. Folders to package</h2>
                 <div class="input-group">
-                    <input 
-                        type="text" 
-                        id="folderPath" 
-                        class="path-input" 
-                        placeholder="Click 'Browse' to select a folder..."
-                        readonly
-                    >
-                    <button id="browseBtn" class="btn btn-primary">Browse</button>
+                    <button id="browseBtn" class="btn btn-primary" type="button">Add folders</button>
+                    <button id="clearFoldersBtn" class="btn btn-secondary" type="button" disabled>Clear all</button>
                 </div>
-                <p class="help-text">Select the folder containing files you want to package</p>
+                <ul id="folderList" class="folder-list" aria-label="Selected folders">
+                    <li id="folderListEmpty" class="folder-list-empty">No folders selected yet.</li>
+                </ul>
+                <p class="help-text">Each folder becomes a top-level entry in the installer archive.</p>
             </section>
 
-            <!-- Step 2: Configure Installer -->
             <section class="section">
-                <h2>Step 2: Configure Installer</h2>
-                
+                <h2>2. Installer details</h2>
+
                 <div class="form-grid">
                     <div class="form-group">
-                        <label for="appName">Application Name</label>
-                        <input 
-                            type="text" 
-                            id="appName" 
-                            class="input" 
-                            placeholder="My Application"
-                            value="MyPackage"
-                        >
+                        <label for="appName">Display name</label>
+                        <input type="text" id="appName" class="input" placeholder="My Mod Pack" value="MyPackage">
                     </div>
 
                     <div class="form-group">
-                        <label for="outputName">Output Executable Name</label>
-                        <input 
-                            type="text" 
-                            id="outputName" 
-                            class="input" 
-                            placeholder="MyInstaller"
-                        >
+                        <label for="outputName">Output file name</label>
+                        <input type="text" id="outputName" class="input" placeholder="MyInstaller">
                     </div>
 
                     <div class="form-group">
                         <label for="version">Version</label>
-                        <input 
-                            type="text" 
-                            id="version" 
-                            class="input" 
-                            placeholder="1.0.0"
-                            value="1.0.0"
-                        >
+                        <input type="text" id="version" class="input" placeholder="1.0.0" value="1.0.0">
                     </div>
 
                     <div class="form-group">
-                        <label for="outputDir">Output Directory</label>
+                        <label for="outputDir">Output directory</label>
                         <div class="input-group">
-                            <input 
-                                type="text" 
-                                id="outputDir" 
-                                class="path-input" 
-                                value="./dist"
-                                readonly
-                            >
-                            <button id="browseOutputBtn" class="btn btn-secondary">Browse</button>
+                            <input type="text" id="outputDir" class="path-input" value="./dist" readonly>
+                            <button id="browseOutputBtn" class="btn btn-secondary" type="button">Browse</button>
                         </div>
+                    </div>
+                </div>
+
+                <p id="filenamePreview" class="filename-preview">Will create: <strong>MyPackage-1.0.0.exe</strong></p>
+
+                <div class="form-group form-group-wide">
+                    <label for="defaultInstallPath">Default install path for end users</label>
+                    <div class="input-group">
+                        <input type="text" id="defaultInstallPath" class="path-input editable" placeholder="Leave blank to let users choose">
+                        <button id="browseInstallPathBtn" class="btn btn-secondary" type="button">Browse</button>
+                    </div>
+                    <div class="suggest-row">
+                        <label for="pathSuggest">Or suggest a known location</label>
+                        <select id="pathSuggest" class="input select">
+                            <option value="">— Custom / none —</option>
+                        </select>
+                    </div>
+                    <p class="help-text">Prefills the installer’s destination field. Users can still change it.</p>
+                </div>
+
+                <div class="form-group form-group-wide">
+                    <label for="iconPath">Installer icon (.ico)</label>
+                    <div class="input-group">
+                        <input type="text" id="iconPath" class="path-input" placeholder="Optional" readonly>
+                        <button id="browseIconBtn" class="btn btn-secondary" type="button">Browse</button>
+                        <button id="clearIconBtn" class="btn btn-ghost" type="button">Clear</button>
                     </div>
                 </div>
 
@@ -94,46 +96,56 @@
                         <input type="checkbox" id="includeVersion" checked>
                         <span>Include version in filename</span>
                     </label>
-                    <label class="checkbox-label">
-                        <input type="checkbox" id="useCppExtractor">
-                        <span>Use C++ extractor (smaller size, requires C++ compiler)</span>
+                    <label class="checkbox-label" id="backupOverwrittenLabel">
+                        <input type="checkbox" id="backupOverwritten" checked>
+                        <span>Back up files that get overwritten (recommended for mod installs)</span>
                     </label>
-                    <label class="checkbox-label" id="upxCompressLabel" style="display: none;">
-                        <input type="checkbox" id="compressWithUPX">
-                        <span>Compress with UPX (30-50% smaller, may trigger antivirus)</span>
-                    </label>
+                    <p class="help-text" id="backupUnavailableNote" hidden>Backup on overwrite is only available with the standard extractor.</p>
                 </div>
+
+                <details class="advanced">
+                    <summary>Advanced options</summary>
+                    <div class="advanced-body">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="useCppExtractor">
+                            <span>Use C++ extractor (smaller size; requires a C++ compiler)</span>
+                        </label>
+                        <label class="checkbox-label warn-label" id="upxCompressLabel" hidden>
+                            <input type="checkbox" id="compressWithUPX">
+                            <span>Compress with UPX (30–50% smaller; often triggers antivirus)</span>
+                        </label>
+                        <p class="help-text trust-note">UPX stays off by default. Prefer an unsigned but clean build over aggressive packing.</p>
+                    </div>
+                </details>
             </section>
 
-            <!-- Step 3: Create Installer -->
             <section class="section">
-                <h2>Step 3: Create Installer</h2>
-                
-                <div id="progressContainer" class="progress-container" style="display: none;">
+                <h2>3. Create installer</h2>
+
+                <div id="progressContainer" class="progress-container" hidden>
                     <div class="progress-bar">
                         <div id="progressFill" class="progress-fill"></div>
                     </div>
                     <p id="progressText" class="progress-text">Creating installer...</p>
                 </div>
 
-                <div id="resultContainer" class="result-container" style="display: none;">
+                <div id="resultContainer" class="result-container" hidden>
                     <div id="resultMessage" class="result-message"></div>
-                    <button id="openFolderBtn" class="btn btn-success" style="display: none;">Open Output Folder</button>
+                    <div id="resultMeta" class="result-meta" hidden></div>
+                    <button id="openFolderBtn" class="btn btn-success" type="button" hidden>Open output folder</button>
                 </div>
 
-                <button id="createBtn" class="btn btn-primary btn-large" disabled>
-                    Create Installer
+                <button id="createBtn" class="btn btn-primary btn-large" type="button" disabled>
+                    Create installer
                 </button>
             </section>
         </main>
 
-        <!-- Footer -->
         <footer class="footer">
-            <p>Universal Installer Creator - Works with any game, application, or file distribution</p>
+            <p>Windows single-file installers for mods, games, and folder distributions</p>
         </footer>
     </div>
 
     <script src="renderer.js"></script>
 </body>
 </html>
-

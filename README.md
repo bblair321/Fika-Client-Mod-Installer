@@ -1,77 +1,70 @@
-# EXE Packager - Complete Solution
+# OneFile Installer
 
-A comprehensive tool for creating self-extracting executables and application packages.
+Create a **single Windows `.exe` installer** from one or more folders — built for mods, game files, and simple app distributions.
 
-## 🎯 **What This Tool Does**
+No Inno Setup. No teaching end users how to unzip. Point at folders, set a name, get one executable.
 
-### **1. Universal Single-File Installer**
+## What it does
 
-- Package any folder into a single executable installer
-- Everything is embedded - just one .exe file to distribute
-- Users get a UI dialog to choose installation directory
-- Works for games, applications, mods, or any file distribution
-- Configurable for any game or application
+- Packages folders into one self-extracting installer
+- Gives the end user a small wizard to pick (or confirm) the install location
+- Optional default / suggested path (Steam, Epic, Desktop, custom)
+- Optional `.ico` + product metadata on the output exe
+- Shows size + SHA-256 after a successful build
+- Advanced: native C++ extractor, optional UPX (off by default — AV-noisy)
 
-### **2. Application Packaging (App Packager)**
+> Windows-first. This is an installer creator, not a general Node/Python app bundler.
 
-- Package Node.js, Electron, and Python applications into executables
-- Create standalone applications that don't require runtime installation
-
-## 🚀 **Quick Start**
-
-### **GUI Application (Recommended - Easiest!)**
+## Quick start (GUI)
 
 ```powershell
-# Start the GUI application
-.\start-gui.ps1
-
-# Or use npm
+npm install
 npm run gui
 ```
 
-**Just 3 steps:**
-1. Click "Browse" and select your folder
-2. Enter app name and output name
-3. Click "Create Installer"
+1. Add the folders to package  
+2. Set display name, version, and optional default install path  
+3. Click **Create installer**
 
-### **Command Line Mode:**
+Profiles can be saved/loaded from the header. The last successful settings are restored on next launch.
+
+## CLI
 
 ```powershell
-# Simple command line
-.\scripts\pack-files.ps1 -Folder "my-mod" -OutputName "MyMod"
+# Simple folder pack
+node scripts/pack-files.js --folder "my-mod" --app-name "MyMod" --version "1.0.0"
 
-# With version
+# With a default extract path
+node scripts/pack-files.js --folder "my-mod" --app-name "MyMod" --extract-path "C:\Games\MyGame\Mods"
+```
+
+Or:
+
+```powershell
 .\scripts\pack-files.ps1 -Folder "my-mod" -AppName "MyMod" -Version "1.0.0"
 ```
 
-### **For Applications:**
+## Trust notes
+
+- Prefer a clean, uncompressed build over UPX when distributing widely
+- Share the SHA-256 printed after packaging so users can verify the file
+- Antivirus may still flag unsigned self-extractors — code signing (bring your own cert) is the long-term fix
+
+## Tests
 
 ```powershell
-# Interactive mode
-.\scripts\interactive-packager.ps1
-
-# Command line mode
-.\scripts\package.ps1 node --entry-point ./app.js --output-name myapp
+npm test          # all tests, including a real installer build (~15s)
+npm run test:fast # skips the slow build test
 ```
 
-## ✅ **Features**
-
-- **🎨 Modern GUI Application** - Beautiful, easy-to-use graphical interface
-- **Single-File Distribution** - One .exe file with everything embedded
-- **Simple Creation** - Just point to a folder and get an installer
-- **User-Friendly UI** - Interactive dialogs for directory selection
-- **Auto-Detect Paths** - Configurable path detection for any game or application
-- **Universal Support** - Works with any game, application, or file distribution
-- **Large File Support** - Handles multi-GB archives without issues
-- **Smart Fallbacks** - Always works, even with user errors
-- **Version Support** - Automatic versioning in filenames
-
-## 🛠️ **Installation**
+## Build the GUI app
 
 ```powershell
-# Install Node.js dependencies
-.\install.ps1
-
-# Or manually
-npm install
+npm run build:gui:win
 ```
+
+Output lands in `dist-gui/`.
+
+## License
+
+MIT
