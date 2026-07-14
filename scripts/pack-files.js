@@ -85,10 +85,14 @@ class FilePacker {
       includeVersion: true,
       silentMode: false,
       defaultExtractPath: null,
+      iconPath: null,
+      backupOverwritten: false, // Back up files the installer would overwrite (Node.js extractor only)
       extractorType: "nodejs", // 'nodejs' or 'cpp'
       cppCompiler: "auto", // 'auto', 'msvc', or 'mingw'
+      compressWithUPX: false, // Off by default — UPX often triggers antivirus
       useResourceEmbedding: true, // Use Windows resources instead of base64 (C++ only)
       archiveFormat: "zip", // 'zip' or '7z' (default to ZIP for best compatibility and speed)
+      onProgress: null, // (message, percentage) => void
       // Universal installer messages (can be customized)
       messages: {
         title: "File Extractor",
@@ -105,6 +109,16 @@ class FilePacker {
       },
       ...config,
     };
+  }
+
+  reportProgress(message, percentage) {
+    if (typeof this.config.onProgress === "function") {
+      try {
+        this.config.onProgress(message, percentage);
+      } catch (e) {
+        // Ignore progress callback errors
+      }
+    }
   }
 
   /**
@@ -137,6 +151,7 @@ class FilePacker {
     } = options;
 
     console.log("📦 Creating self-extracting package...");
+    this.reportProgress("Preparing workspace...", 5);
 
     // Create temporary directory for packaging
     const tempDir = path.join(this.config.outputDir, "temp-package");
@@ -162,6 +177,7 @@ class FilePacker {
     console.log("Files:", files.length);
     console.log("Folders:", folders.length);
     console.log("Format:", archiveFormat.toUpperCase());
+    this.reportProgress("Creating archive...", 15);
     await this.createArchive(files, folders, archivePath, archiveFormat);
 
     // Store archive format for later use
@@ -225,6 +241,7 @@ class FilePacker {
     const outputFileName = outputName || this.generateOutputName();
 
     // Read and base64 encode the archive to embed it
+    this.reportProgress("Embedding archive...", 45);
     console.log("🔐 Encoding archive for embedding...");
     const archiveBuffer = fs.readFileSync(archivePath);
     const archiveSize = archiveBuffer.length;
@@ -261,6 +278,7 @@ class FilePacker {
 
     // Create the extractor executable with embedded archive
     // For C++ with resource embedding, we need to pass archivePath
+    this.reportProgress("Generating installer...", 55);
     const extractorCode = this.generateExtractor(
       archiveBase64,
       archiveSize,
@@ -469,6 +487,12 @@ class FilePacker {
         )
       );
     }
+    this.reportProgress(
+      this.config.extractorType === "cpp"
+        ? "Compiling executable..."
+        : "Packaging executable...",
+      70
+    );
     await this.createExtractorExecutable(
       extractorPath,
       outputFileName,
@@ -478,8 +502,10 @@ class FilePacker {
     );
 
     // Cleanup temp directory (with retry logic for locked files)
+    this.reportProgress("Cleaning up...", 92);
     await this.cleanup(tempDir);
 
+    this.reportProgress("Complete!", 100);
     console.log(`✅ Created single-file installer: ${outputFileName}.exe`);
     console.log(
       `📦 Archive embedded: ${(archiveSize / 1024 / 1024).toFixed(2)} MB`
@@ -820,7 +846,22 @@ class FilePacker {
     // Replace {{APP_NAME}} in the HTA HTML
     htaHtml = htaHtml.replace(/\{\{APP_NAME\}\}/g, escapedAppNameForHta);
 
+    // Default install path (empty string if none)
+    const defaultExtractPath = this.config.defaultExtractPath || "";
+    const escapedDefaultPathForJs = String(defaultExtractPath)
+      .replace(/\\/g, "\\\\")
+      .replace(/"/g, '\\"')
+      .replace(/\r/g, "")
+      .replace(/\n/g, "");
+    htaHtml = htaHtml.replace(
+      /\{\{DEFAULT_EXTRACT_PATH\}\}/g,
+      escapedDefaultPathForJs
+    );
+
     console.log("✅ Replaced placeholders in HTA HTML content");
+    if (defaultExtractPath) {
+      console.log(`📁 Default install path: ${defaultExtractPath}`);
+    }
 
     // Determine embedding method
     const useResource =
@@ -1223,12 +1264,36 @@ class FilePacker {
     // Replace APP_NAME
     guiCode = guiCode.replace(/\{\{APP_NAME\}\}/g, appNameSafe);
 
+    const defaultExtractPath = this.config.defaultExtractPath || "";
+    const escapedDefaultPath = String(defaultExtractPath)
+      .replace(/\\/g, "\\\\")
+      .replace(/"/g, '\\"')
+      .replace(/\r/g, "")
+      .replace(/\n/g, "");
+    guiCode = guiCode.replace(
+      /\{\{DEFAULT_EXTRACT_PATH\}\}/g,
+      escapedDefaultPath
+    );
+
+    guiCode = guiCode.replace(
+      /\{\{BACKUP_OVERWRITTEN\}\}/g,
+      this.config.backupOverwritten ? "true" : "false"
+    );
+
     // Validate that all placeholders were replaced
     const hasArchivePlaceholder = guiCode.includes("{{ARCHIVE_BASE64}}");
     const hasSizePlaceholder = guiCode.includes("{{ARCHIVE_SIZE}}");
     const hasAppNamePlaceholder = guiCode.includes("{{APP_NAME}}");
+    const hasDefaultPathPlaceholder = guiCode.includes(
+      "{{DEFAULT_EXTRACT_PATH}}"
+    );
 
-    if (hasArchivePlaceholder || hasSizePlaceholder || hasAppNamePlaceholder) {
+    if (
+      hasArchivePlaceholder ||
+      hasSizePlaceholder ||
+      hasAppNamePlaceholder ||
+      hasDefaultPathPlaceholder
+    ) {
       console.error("❌ ERROR: Some placeholders were not replaced!");
       if (hasArchivePlaceholder) {
         const pos = guiCode.indexOf("{{ARCHIVE_BASE64}}");
@@ -1243,6 +1308,9 @@ class FilePacker {
       }
       if (hasAppNamePlaceholder) {
         console.error("  - {{APP_NAME}} still present");
+      }
+      if (hasDefaultPathPlaceholder) {
+        console.error("  - {{DEFAULT_EXTRACT_PATH}} still present");
       }
       throw new Error(
         "Placeholder replacement failed! Cannot create installer."
@@ -1569,6 +1637,8 @@ class FilePacker {
           1024
         ).toFixed(2)} MB`
       );
+
+      await this.applyExecutableMetadata(finalOutputPath);
     } catch (error) {
       compileSpinner.fail("❌ C++ compilation failed");
 
@@ -1772,7 +1842,9 @@ class FilePacker {
       // Check if tempDir is on a network drive - if so, copy files to local temp and run from there
       const isTempDirUnc =
         tempDir.startsWith("\\\\") || tempDir.startsWith("//");
-      let pkgWorkingDir = tempDir;
+      // Must be absolute: this path is used both for process.chdir and as
+      // execSync cwd, and a relative path would resolve twice after chdir.
+      let pkgWorkingDir = path.resolve(tempDir);
 
       if (isTempDirUnc) {
         // Create a local temp directory for pkg to work from
@@ -2396,10 +2468,64 @@ if ($subsystem -eq 2) {
       throw error;
     }
 
+    // Apply icon / version metadata when configured
+    const metadataPath = isUncPath ? finalOutputPath : outputPath;
+    const metadataExe = metadataPath.endsWith(".exe")
+      ? metadataPath
+      : metadataPath + ".exe";
+    if (fs.existsSync(metadataExe)) {
+      await this.applyExecutableMetadata(metadataExe);
+    } else if (fs.existsSync(metadataPath)) {
+      await this.applyExecutableMetadata(metadataPath);
+    }
+
     // Post-process the executable if needed
     if (this.config.branding) {
       const brandingPath = isUncPath ? finalOutputPath : outputPath;
       await this.applyBranding(brandingPath);
+    }
+  }
+
+  /**
+   * Apply icon and version metadata to the finished executable
+   */
+  async applyExecutableMetadata(executablePath) {
+    if (!executablePath || !fs.existsSync(executablePath)) {
+      return;
+    }
+
+    const hasIcon =
+      this.config.iconPath && fs.existsSync(this.config.iconPath);
+    const appName = this.config.appName || "Installer";
+    const version = this.config.version || "1.0.0";
+
+    if (!hasIcon && !appName) {
+      return;
+    }
+
+    try {
+      const rcedit = require("rcedit");
+      const options = {
+        "version-string": {
+          ProductName: appName,
+          FileDescription: `${appName} Installer`,
+          CompanyName: appName,
+          ProductVersion: version,
+          FileVersion: version,
+        },
+        "product-version": version,
+        "file-version": version,
+      };
+
+      if (hasIcon) {
+        options.icon = this.config.iconPath;
+        console.log(`🎨 Applying icon: ${this.config.iconPath}`);
+      }
+
+      await rcedit(executablePath, options);
+      console.log("✅ Applied executable metadata");
+    } catch (error) {
+      console.warn(`⚠️  Could not apply executable metadata: ${error.message}`);
     }
   }
 
@@ -2544,6 +2670,7 @@ Options:
   --config <file>       - Use configuration file (JSON)
   --silent-mode         - Create silent installer (no user prompts)
   --extract-path <path> - Default extraction path for silent mode
+  --backup-overwritten  - Back up files the installer overwrites (Node.js extractor)
 
 Examples:
   node pack-files.js --folder "./my-mod" --output-name "MyMod"
@@ -2568,7 +2695,7 @@ Configuration file format:
   for (let i = 0; i < args.length; i++) {
     const key = args[i].replace("--", "");
 
-    if (key === "silent-mode") {
+    if (key === "silent-mode" || key === "backup-overwritten") {
       options[key] = true;
     } else if (key === "folder") {
       // Simplified option: single folder
@@ -2616,6 +2743,8 @@ Configuration file format:
     ...finalConfig,
     silentMode: options["silent-mode"] || false,
     defaultExtractPath: options["extract-path"] || null,
+    backupOverwritten:
+      options["backup-overwritten"] || config.backupOverwritten || false,
   };
   const packer = new FilePacker(packerConfig);
 
